@@ -610,6 +610,11 @@ static int dchid_raw_request(struct hid_device *hdev,
 		buf[0] = reportnum;
 		return dchid_cmd(iface, rtype, REQ_GET_REPORT, &reportnum, 1, buf + 1, len - 1);
 	case HID_REQ_SET_REPORT:
+                /* Actuator needs this */
+                if (rtype == HID_FEATURE_REPORT) {
+                  return dchid_cmd(iface, rtype, REQ_SET_REPORT,
+                      buf, len, NULL, 0);
+                }
 		return dchid_set_report(iface, buf, len);
 	default:
 		return -EIO;
