@@ -95,8 +95,12 @@ void t8103_configure_stream(struct avd_dev *avd, dma_addr_t addr, u8 fifo_idx,
 void t8112_configure_stream(struct avd_dev *avd, dma_addr_t addr, u8 fifo_idx,
 			  u32 vp_slot)
 {
-	w32(AVD_V4_VP_INSN_FIFO_IOVA_HI + (fifo_idx * 4), addr >> 32);
-	w32(AVD_V4_VP_INSN_FIFO_IOVA_LO + (fifo_idx * 4), addr & 0xffffffff);
+	if (avd->variant->quirks & AVD_QUIRK_LSR) {
+		w32(AVD_V4_VP_INSN_FIFO_IOVA_LO + (fifo_idx * 4), addr >> 8);
+	} else {
+		w32(AVD_V4_VP_INSN_FIFO_IOVA_HI + (fifo_idx * 4), addr >> 32);
+		w32(AVD_V4_VP_INSN_FIFO_IOVA_LO + (fifo_idx * 4), addr & 0xffffffff);
+	}
 	w32(AVD_V4_VP_INSN_FIFO_MASK + (fifo_idx * 4), 0);
 	w32(AVD_V4_VP_INSN_FIFO_CACH + (fifo_idx * 4), 0);
 	w32(AVD_V4_VP_INSN_FIFO_XFER + (fifo_idx * 4), 0);

@@ -168,6 +168,7 @@ static void stream_hdr(struct avd_ctx *ctx, struct avd_h264_run *run)
 	const struct v4l2_ctrl_h264_pps *pps = run->pps;
 	struct avd_dev *avd = ctx->dev;
 	struct avd_h264_ctx *h264_ctx = ctx->priv;
+	u32 bytesperline;
 	u32 width = (sps->pic_width_in_mbs_minus1 + 1) * 16;
 	u32 height = (sps->pic_height_in_map_units_minus1 + 1) * 16;
 
@@ -180,7 +181,7 @@ static void stream_hdr(struct avd_ctx *ctx, struct avd_h264_run *run)
 			| 0x1000
 			| ((decode->flags & V4L2_H264_DECODE_PARAM_FLAG_IDR_PIC) ? 0x2000 : 0)
 			| 0x2e0
-			| (avd->variant->revision == 3 ? 0 : 0x80000)
+			| (avd->variant->quirks & AVD_QUIRK_NO_PIPE_STATE ? 0 : 0x80000)
 			, "hdr_34_start_hdr");
 
 	push(AVD_CODEC_H264 << 24, "hdr_38_mode");
@@ -211,7 +212,8 @@ static void stream_hdr(struct avd_ctx *ctx, struct avd_h264_run *run)
 		, "hdr_48_chroma_qp_index_offset");
 
     push(0x30000a
-			| (avd->variant->revision == 3 ? 0 : 0x30), "hdr_58_const_3a");
+			| (avd->variant->quirks & AVD_QUIRK_NO_PIPE_STATE ? 0 : 0x30),
+			"hdr_58_const_3a");
 
 	push(INST_DMA2, "cm3_dma_config_1");
 	push(INST_DMA1, "cm3_dma_config_2");
@@ -226,7 +228,7 @@ static void stream_hdr(struct avd_ctx *ctx, struct avd_h264_run *run)
 
 	if (avd->variant->revision == 3)
 		push(0, "zero");
-	else
+	else if (!(avd->variant->quirks & AVD_QUIRK_NO_PIPE_STATE))
 		/* Frame statistics? another pps_tile?
 		 * i have no clue. Seems to work */
 		pusha(h264_ctx->bufs.unk.addr, "unk_addr", 0);
@@ -238,10 +240,14 @@ static void stream_hdr(struct avd_ctx *ctx, struct avd_h264_run *run)
 
 	push_rvra(avd, ctx, run->addresses.rvra, ctx->rvra_offsets);
 
+	bytesperline = ctx->decoded_fmt.fmt.pix_mp.plane_fmt[0].bytesperline;
+	if (avd->variant->quirks & AVD_QUIRK_LSR)
+		bytesperline = bytesperline >> 4;
+
 	pusha(run->addresses.y, "hdr_210_y_addr_lsb8", 0);
-	push(ctx->decoded_fmt.fmt.pix_mp.plane_fmt[0].bytesperline, "hdr_218_width_align");
+	push(bytesperline, "hdr_218_width_align");
 	pusha(run->addresses.uv,"hdr_214_uv_addr_lsb8", 0);
-	push(ctx->decoded_fmt.fmt.pix_mp.plane_fmt[0].bytesperline, "hdr_21c_width_align");
+	push(bytesperline, "hdr_21c_width_align");
 
 	push(0x0, "cm3_mark_end_section");
 	push(((height - 1) << 16) | (width - 1), "hdr_54_height_width");
@@ -482,7 +488,7 @@ static int avd_h264_alloc_bufs(struct avd_ctx *ctx)
 		return ret;
 	}
 
-	if (ctx->dev->variant->revision != 3) {
+	if (!(dev->variant->quirks & AVD_QUIRK_NO_PIPE_STATE)) {
 		ret = avd_buf_alloc(dev, &h264_ctx->bufs.unk, 0x200);
 		if (ret) {
 			dev_err(dev->dev, "unk alloc failed\n");
@@ -520,7 +526,7 @@ static void avd_h264_free_bufs(struct avd_ctx *ctx)
 	if (!h264_ctx)
 		return;
 
-	if (ctx->dev->variant->revision != 3)
+	if (!(dev->variant->quirks & AVD_QUIRK_NO_PIPE_STATE))
 		avd_buf_free(dev, &h264_ctx->bufs.unk);
 	avd_buf_free(dev, &h264_ctx->bufs.inst);
 
@@ -678,6 +684,7 @@ static int avd_h264_run(struct avd_ctx *ctx)
 	slice_size = stream_slice(ctx, &run);
 
 	if (run.base.bufs.src->flags & V4L2_BUF_FLAG_M2M_HOLD_CAPTURE_BUF) {
+		/* TODO: offset on m1 */
 		u32 reg = (0x1018 | ctx->vp_slot << 8);
 		ret = readl_poll_timeout(
 			avd->ctrl + reg, slice_parsed,

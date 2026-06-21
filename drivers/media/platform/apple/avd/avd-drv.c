@@ -409,6 +409,7 @@ static const struct avd_variant avd_t8103_variant = {
 	.configure_stream = t8103_configure_stream,
 	.fw_name = "apple/avd-fw-v2-t0.bin",
 	.revision = 3,
+	.quirks = AVD_QUIRK_LSR | AVD_QUIRK_NO_PIPE_STATE,
 	.vp_slot_offset = 0x4004,
 	.submit_offset = 0x4014,
 };
@@ -427,11 +428,30 @@ static const struct avd_variant avd_t6000_variant = {
 	.configure_stream = t8112_configure_stream,
 	.fw_name = "apple/avd-fw-v3-t0.bin",
 	.revision = 4,
+	.quirks = AVD_QUIRK_LSR | AVD_QUIRK_NO_PIPE_STATE,
 	.vp_slot_offset = 0xc,
 	.submit_offset = 0x30,
 };
 
 static const struct avd_variant avd_t8112_variant = {
+	.vp_slots = {
+		[AVD_CODEC_HEVC] = 4,
+		[AVD_CODEC_H264] = 4,
+		[AVD_CODEC_VP9] = 1,
+	},
+	.fifo_slots = 15,
+	.capabilities = AVD_CAPABILITY_HEVC |
+			AVD_CAPABILITY_H264 |
+			AVD_CAPABILITY_VP9,
+	.configure_stream = t8112_configure_stream,
+	.fw_name = "apple/avd-fw-v3-t1.bin",
+	.revision = 4,
+	.quirks = AVD_QUIRK_LSR,
+	.vp_slot_offset = 0xc,
+	.submit_offset = 0x30,
+};
+
+static const struct avd_variant avd_t6020_variant = {
 	.vp_slots = {
 		[AVD_CODEC_HEVC] = 4,
 		[AVD_CODEC_H264] = 4,
@@ -519,6 +539,10 @@ static const struct of_device_id avd_of_match[] = {
 	{
 		.compatible = "apple,t8112-avd",
 		.data = &avd_t8112_variant
+	},
+	{
+		.compatible = "apple,t6020-avd",
+		.data = &avd_t6020_variant
 	},
 	{
 		.compatible = "apple,t8122-avd",

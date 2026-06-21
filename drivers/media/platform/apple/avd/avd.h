@@ -16,6 +16,12 @@
 #define AVD_CAPABILITY_H264 BIT(1)
 #define AVD_CAPABILITY_VP9 BIT(2)
 
+/* Shifts addreses right and bytesperline?? */
+#define AVD_QUIRK_LSR BIT(0)
+/* might be the unk buf */
+#define AVD_QUIRK_NO_PIPE_STATE BIT(1)
+
+
 struct avd_ctx;
 struct avd_dev;
 
@@ -109,6 +115,7 @@ struct avd_variant {
 	/* just for convenience */
 	u32 vp_slot_offset;
 	u32 submit_offset;
+	unsigned int quirks;
 };
 
 struct avd_dev {
