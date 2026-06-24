@@ -135,7 +135,7 @@ struct avd_dev {
 	void __iomem *ctrl;
 	void __iomem *wrap;
 
-	struct iommu_domain *domain;
+	struct iommu_domain *empty_domain;
 
 	struct mutex vdev_lock;
 	struct mutex dev_mutex;

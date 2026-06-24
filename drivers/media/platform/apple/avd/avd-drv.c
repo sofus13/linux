@@ -84,13 +84,14 @@ static int avd_reset(struct avd_dev *avd)
 	if (ret < 0)
 		return ret;
 
-	iommu_reset_dev(avd->domain);
-
 	ret = reset_control_reset(avd->rstc);
 	if (ret)
 		dev_err(avd->dev, "reset: failed: %d", ret);
 
-	iommu_restore_dev(avd->domain);
+	if (avd->empty_domain) {
+		iommu_attach_device(avd->empty_domain, avd->dev);
+		iommu_detach_device(avd->empty_domain, avd->dev);
+	}
 
 	ret = avd_boot(avd);
 	if (ret)
@@ -602,11 +603,12 @@ static int avd_probe(struct platform_device *pdev)
 	if (IS_ERR(avd->wrap))
 		return PTR_ERR(avd->wrap);
 
-
-	avd->domain = iommu_get_domain_for_dev(avd->dev);
-	if (!avd->domain) {
-		dev_err(avd->dev, "Failed to request iommu");
-		return -EINVAL;
+	if (iommu_get_domain_for_dev(avd->dev)) {
+		avd->empty_domain = iommu_paging_domain_alloc(avd->dev);
+		if (IS_ERR(avd->empty_domain)) {
+			avd->empty_domain = NULL;
+			dev_warn(avd->dev, "cannot alloc new empty domain");
+		}
 	}
 
 	ret = request_firmware(&avd->fw, avd->variant->fw_name, avd->dev);
@@ -661,6 +663,10 @@ static void avd_remove(struct platform_device *pdev)
 	release_firmware(avd->fw);
 
 	avd_v4l2_cleanup(avd);
+
+	if (avd->empty_domain)
+		iommu_domain_free(avd->empty_domain);
+
 
 	pm_runtime_disable(avd->dev);
 	pm_runtime_dont_use_autosuspend(avd->dev);
