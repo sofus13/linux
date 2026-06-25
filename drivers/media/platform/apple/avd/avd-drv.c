@@ -138,8 +138,9 @@ static irqreturn_t avd_irq_handler(int irq, void *data)
 		return IRQ_HANDLED;
 
 	status = avd_r32(mbox, AVD_REG_MBOX1_RETRIEVE);
-
+	dev_info(avd->dev, "IRQ: %08x", status);
 	avd_w32(mbox, AVD_REG_MBOX_IRQ_CLR, AVD_MBOX1_NOT_EMPTY);
+	return IRQ_HANDLED;
 
 	if (status & 0x10000) { /* dbg */
 		dev_warn(avd->dev, "no handler for IRQ: %3d", status &~0x10000);

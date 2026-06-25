@@ -34,6 +34,16 @@ static inline bool boolify(u32 v)
 static inline void push(struct avd_dev *avd, struct avd_ctx *ctx, u32 inst)
 {
 	avd_w32(ctrl, avd->variant->vp_slot_offset + (ctx->vp_slot * 4), inst);
+	dev_info(avd->dev, "%8x %08x %04x %04x %02x %04x %04x %04x",
+			inst,
+			avd_r32(ctrl, 0x1004 | (ctx->vp_slot << 8)),
+			avd_r32(ctrl, 0x100c | (ctx->vp_slot << 8)),
+			avd_r32(ctrl, 0x1010 | (ctx->vp_slot << 8)),
+			avd_r32(ctrl, 0x1014 | (ctx->vp_slot << 8)),
+			avd_r32(ctrl, 0x1018 | (ctx->vp_slot << 8)),
+			avd_r32(ctrl, 0x101c | (ctx->vp_slot << 8)),
+			avd_r32(ctrl, 0x1c8 + (ctx->fifo_idx * 4))
+			);
 }
 static inline void push_address(struct avd_dev *avd, struct avd_ctx *ctx,
 				dma_addr_t addr)

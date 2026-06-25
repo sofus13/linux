@@ -255,10 +255,7 @@ static void stream_hdr(struct avd_ctx *ctx, struct avd_h264_run *run)
 	if (!(decode->flags & V4L2_H264_DECODE_PARAM_FLAG_IDR_PIC))
 		stream_refs(ctx, run);
 
-	if (pps->flags & V4L2_H264_PPS_FLAG_SCALING_MATRIX_PRESENT)
-		stream_scaling(ctx, run);
-	else
-		push(0x0, "cm3_mark_end_section_scl");
+	push(0x0, "cm3_mark_end_section_scl");
 }
 
 static void stream_weights(struct avd_ctx *ctx, struct avd_h264_run *run)
@@ -662,16 +659,14 @@ static int avd_h264_run(struct avd_ctx *ctx)
 
 	avd_run_postamble(ctx, &run.base);
 
-	if (is_new_frame(run.sl)) {
-		ret = alloc_slots(avd, ctx, AVD_CODEC_H264);
-		if (ret) {
-			dev_err(avd->dev, "no free slots: %d", ret);
-			return ret;
-		}
-		avd->variant->configure_stream(ctx->dev, h264_ctx->bufs.inst.addr,
-				     ctx->fifo_idx, ctx->vp_slot);
-		stream_hdr(ctx, &run);
+	ret = alloc_slots(avd, ctx, AVD_CODEC_H264);
+	if (ret) {
+		dev_err(avd->dev, "no free slots: %d", ret);
+		return ret;
 	}
+	avd->variant->configure_stream(ctx->dev, h264_ctx->bufs.inst.addr,
+			ctx->fifo_idx, ctx->vp_slot);
+	stream_hdr(ctx, &run);
 
 	if (ctx->vp_slot == VP_SLOT_NONE) {
 		/* Only happens if its a multi slice frame and there was an error */
@@ -679,35 +674,79 @@ static int avd_h264_run(struct avd_ctx *ctx)
 		return -ENOMEM;
 	}
 
-	schedule_delayed_work(&ctx->watchdog_work, msecs_to_jiffies(2000));
-
 	slice_size = stream_slice(ctx, &run);
+	usleep_range(400, 500);
+	dev_info(avd->dev, "stream: done %04x/%04x",
+			avd_r32(ctrl, 0x1018 | ctx->vp_slot << 8), slice_size);
+	avd_status(avd, ctx->vp_slot);
 
-	if (run.base.bufs.src->flags & V4L2_BUF_FLAG_M2M_HOLD_CAPTURE_BUF) {
-		/* TODO: offset on m1 */
-		u32 reg = (0x1018 | ctx->vp_slot << 8);
+	if (run.base.bufs.src->flags & V4L2_BUF_FLAG_M2M_HOLD_CAPTURE_BUF)
+		return -EINVAL;
+
+	avd_w32(ctrl, avd->variant->submit_offset,
+			0x2b000000
+			| (avd->variant->revision == 3 ? 0x100 : 0x200)
+			| (ctx->fifo_idx << 4)
+			| avd->variant->fifo_slots);
+
+	u32 status;
+	if (avd->variant->revision == 3) {
+#define STATUS 0x4060
+		dev_info(avd->dev, "%08x", avd_r32(ctrl, STATUS));
 		ret = readl_poll_timeout(
-			avd->ctrl + reg, slice_parsed,
-			slice_parsed >= round_down(slice_size, 8), 10, 40000);
-
-		if (ctx->vp_slot ==
-		    VP_SLOT_NONE) /* an error already happened */
-			return 0;
-
-		if (cancel_delayed_work(&ctx->watchdog_work)) {
-			if (ret) {
-				dev_err(avd->dev,
-					"VP%d: timed out (%02d)!"
-					" size: %08x parsed: %08x",
-					ctx->vp_slot, ctx->fifo_idx, slice_size,
-					slice_parsed);
-				avd_status(avd, ctx->vp_slot);
-				return ret;
-			}
-
-			avd_job_finish(ctx, VB2_BUF_STATE_DONE);
+				avd->ctrl + STATUS, status,
+				(status & 0xc00000) == 0xc00000, 10, 100);
+		if (ret) {
+			dev_err(avd->dev, "timeout waiting for something: %08x",
+					avd_r32(ctrl, STATUS));
+			return ret;
+		}
+		avd_w32(ctrl, STATUS, 4 << (2 * 5));
+		ret = readl_poll_timeout(
+				avd->ctrl + STATUS, status,
+				!(status & 4 << (2 * 5)), 10, 100);
+		if (ret) {
+			dev_err(avd->dev, "timeout waiting for VP: %08x",
+					avd_r32(ctrl, STATUS));
+			return -EINVAL;
+		}
+		avd_w32(ctrl, STATUS, 4 << (4 * 5));
+		ret = readl_poll_timeout(
+				avd->ctrl + STATUS, status,
+				!(status & 4 << (4 * 5)), 10, 100);
+		if (ret) {
+			dev_err(avd->dev, "timeout waiting for PP: %08x",
+					avd_r32(ctrl, STATUS));
+			return -EINVAL;
+		}
+	} else {
+		avd_w32(ctrl, 0x134, 4);
+		ret = readl_poll_timeout(
+				avd->ctrl + 0x134, status,
+				!(status & 4), 10, 100);
+		if (ret) {
+			dev_err(avd->dev, "timeout waiting for VP: %08x",
+					avd_r32(ctrl, 0x134));
+			return -EINVAL;
+		}
+		avd_w32(ctrl, 0x148, 4);
+		ret = readl_poll_timeout(
+				avd->ctrl + 0x148, status,
+				!(status & 4), 10, 100);
+		if (ret) {
+			dev_err(avd->dev, "timeout waiting for PP: %08x",
+					avd_r32(ctrl, 0x148));
+			return -EINVAL;
 		}
 	}
+	avd_job_finish(ctx, VB2_BUF_STATE_DONE);
+	print_hex_dump(KERN_DEBUG,
+			"inst: ", DUMP_PREFIX_OFFSET, 16, 4,
+			h264_ctx->bufs.inst.cpu,
+			32, true);
+
+	free_vp_slot(avd, ctx);
+	free_inst_slot(avd, ctx);
 
 	return 0;
 }

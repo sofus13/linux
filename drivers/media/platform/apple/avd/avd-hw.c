@@ -44,8 +44,6 @@ int avd_boot(struct avd_dev *avd)
 	u32 val;
 	int ret;
 
-	avd_w32(base, AVD_REG_POWER_ON, 0xfff);
-
 	if (avd->variant->revision != 3)
 		dev_info_once(avd->dev, "booting hw version: %04x", avd_r32(ctrl, 0));
 
@@ -63,6 +61,9 @@ int avd_boot(struct avd_dev *avd)
 			val, val == 1, 10, 10000);
 	if (ret)
 		return ret;
+	avd_w32(mbox, AVD_REG_RUN_CTRL, AVD_RUN_CTRL_UNK_STOP);
+	avd_w32(mbox, AVD_REG_FLAG0_CLR, 0x1);
+	avd_w32(mbox, AVD_REG_MBOX_IRQ_ENABLE, 0x0);
 
 	return 0;
 }
@@ -85,11 +86,6 @@ void t8103_configure_stream(struct avd_dev *avd, dma_addr_t addr, u8 fifo_idx,
 	w32(AVD_V3_VP_INSN_FIFO_MASK + (fifo_idx * 4), 0x100000);
 	w32(AVD_V3_VP_INSN_FIFO_CACH + (fifo_idx * 4), 0);
 	w32(AVD_V3_VP_INSN_FIFO_XFER + (fifo_idx * 4), 0);
-
-	w32(AVD_V3_VP_CTRL_UNK + (vp_slot * 4), 0);
-	m32(AVD_V3_CTRL_CM3_IRQ_MASK,
-			AVD_VP_CM3_MASK << (vp_slot * 5)
-			| (AVD_PP_CM3_MASK << 20));
 }
 
 void t8112_configure_stream(struct avd_dev *avd, dma_addr_t addr, u8 fifo_idx,
@@ -104,9 +100,6 @@ void t8112_configure_stream(struct avd_dev *avd, dma_addr_t addr, u8 fifo_idx,
 	w32(AVD_V4_VP_INSN_FIFO_MASK + (fifo_idx * 4), 0);
 	w32(AVD_V4_VP_INSN_FIFO_CACH + (fifo_idx * 4), 0);
 	w32(AVD_V4_VP_INSN_FIFO_XFER + (fifo_idx * 4), 0);
-
-	m32(AVD_V4_VP_CTRL_CM3_IRQ_MASK + (vp_slot * 4), AVD_VP_CM3_MASK);
-	m32(AVD_V4_PP_CTRL_CM3_IRQ_MASK, AVD_PP_CM3_MASK);
 }
 
 void t8122_configure_stream(struct avd_dev *avd, dma_addr_t addr, u8 fifo_idx,
@@ -136,8 +129,8 @@ void avd_status(struct avd_dev *avd, u32 vp)
 	u32 start = 0x1000 | (vp << 8);
 	dev_info(avd->dev, "VP%d: %08x %08x %08x %08x", vp, r32(start),
 		 r32(start + 4), r32(start + 8), r32(start + 12));
-	dev_info(avd->dev, "VP%d: %08x %08x %08x", vp, r32(start + 16),
-		 r32(start + 20), r32(start + 24));
+	dev_info(avd->dev, "VP%d: %08x %08x %08x %08x", vp, r32(start + 16),
+		 r32(start + 20), r32(start + 24), r32(start + 28));
 }
 
 #undef w32
