@@ -241,8 +241,8 @@
 	avd: avd@2cc000000 {
 		compatible = "apple,t8122-avd";
 		interrupt-parent = <&aic>;
-		interrupts = <AIC_IRQ 1185 IRQ_TYPE_LEVEL_HIGH>,
-			<AIC_IRQ 1186 IRQ_TYPE_LEVEL_HIGH>;
+		interrupts = <AIC_IRQ 0 1185 IRQ_TYPE_LEVEL_HIGH>,
+			<AIC_IRQ 0 1186 IRQ_TYPE_LEVEL_HIGH>;
 		power-domains = <&ps_avd_sys>;
 		resets = <&ps_avd_sys>;
 		reg = <0x2 0xcc000000 0x0 0x1010000>,
@@ -260,7 +260,7 @@
 		reg = <0x2 0xcd010000 0x0 0x4000>;
 		#iommu-cells = <1>;
 		interrupt-parent = <&aic>;
-		interrupts = <AIC_IRQ 1192 IRQ_TYPE_LEVEL_HIGH>;
+		interrupts = <AIC_IRQ 0 1192 IRQ_TYPE_LEVEL_HIGH>;
 		power-domains = <&ps_avd_sys>;
 	};
 
