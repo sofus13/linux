@@ -238,6 +238,32 @@
 		};
 	};
 
+	avd: avd@2cc000000 {
+		compatible = "apple,t8122-avd";
+		interrupt-parent = <&aic>;
+		interrupts = <AIC_IRQ 1185 IRQ_TYPE_LEVEL_HIGH>,
+			<AIC_IRQ 1186 IRQ_TYPE_LEVEL_HIGH>;
+		power-domains = <&ps_avd_sys>;
+		resets = <&ps_avd_sys>;
+		reg = <0x2 0xcc000000 0x0 0x1010000>,
+			<0x2 0xcd080000 0x0 0x12000>,
+			<0x2 0xcd092000 0x0 0x12000>,
+			<0x2 0xcd0a4000 0x0 0x4000>,
+			<0x2 0xcd100000 0x0 0x10000>,
+			<0x2 0xcd400000 0x0 0x4000>;
+		reg-names = "base", "code", "sram", "mbox", "ctrl", "wrap";
+		iommus = <&avd_dart 0>;
+	};
+
+	avd_dart: iommu@2cd010000 {
+		compatible = "apple,t8110-dart";
+		reg = <0x2 0xcd010000 0x0 0x4000>;
+		#iommu-cells = <1>;
+		interrupt-parent = <&aic>;
+		interrupts = <AIC_IRQ 1192 IRQ_TYPE_LEVEL_HIGH>;
+		power-domains = <&ps_avd_sys>;
+	};
+
 	i2c0: i2c@391010000 {
 		compatible = "apple,t6031-i2c", "apple,t8103-i2c";
 		reg = <0x3 0x91010000 0x0 0x4000>;
