@@ -29,7 +29,7 @@
 	};
 
 	avd_dart: iommu@287010000 {
-		compatible = "apple,t6000-dart";
+		compatible = "apple,t8110-dart";
 		reg = <0x2 0x87010000 0x0 0x4000>;
 		#iommu-cells = <1>;
 		interrupt-parent = <&aic>;
