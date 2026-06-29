@@ -5,6 +5,7 @@
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_platform.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/pm.h>
 #include <linux/pm_runtime.h>
@@ -84,13 +85,13 @@ static int avd_reset(struct avd_dev *avd)
 	if (ret < 0)
 		return ret;
 
-	iommu_reset_dev(avd->domain);
+	iommu_reset_dev(avd->ds0);
 
 	ret = reset_control_reset(avd->rstc);
 	if (ret)
 		dev_err(avd->dev, "reset: failed: %d", ret);
 
-	iommu_restore_dev(avd->domain);
+	iommu_restore_dev(avd->ds0);
 
 	ret = avd_boot(avd);
 	if (ret)
@@ -116,9 +117,6 @@ static void avd_watchdog_func(struct work_struct *work)
 	dev_err(avd->dev, "Frame processing timed out! Vp: %d (%02d)",
 		ctx->vp_slot, ctx->fifo_idx);
 
-	free_vp_slot(avd, ctx);
-	free_inst_slot(avd, ctx);
-
 	avd_w32(mbox, AVD_REG_MBOX_IRQ_ENABLE, 0);
 	ret = avd_reset(avd);
 	if (ret)
@@ -134,15 +132,15 @@ static irqreturn_t avd_irq_handler(int irq, void *data)
 
 	enum vb2_buffer_state state;
 	u32 status;
+
+	status = avd_r32(mbox, AVD_REG_MBOX1_RETRIEVE);
+	avd_w32(mbox, AVD_REG_MBOX_IRQ_CLR, AVD_MBOX1_NOT_EMPTY);
 	if (!ctx)
 		return IRQ_HANDLED;
 
-	status = avd_r32(mbox, AVD_REG_MBOX1_RETRIEVE);
-
-	avd_w32(mbox, AVD_REG_MBOX_IRQ_CLR, AVD_MBOX1_NOT_EMPTY);
-
 	if (status & 0x10000) { /* dbg */
-		dev_warn(avd->dev, "no handler for IRQ: %3d", status &~0x10000);
+		dev_warn(avd->dev, "no handler for IRQ: %3d (0x%04x)", status &~0x10000,
+				status &~0x10000);
 		avd_w32(mbox, AVD_REG_MBOX_IRQ_ENABLE, 0);
 		return IRQ_HANDLED;
 	}
@@ -150,23 +148,7 @@ static irqreturn_t avd_irq_handler(int irq, void *data)
 	if (status & 0x1000) {
 		/* pp is done ! we are done*/
 		state = VB2_BUF_STATE_DONE;
-
-		free_inst_slot(avd, ctx);
 	} else if (status & 0x100) {
-		free_vp_slot(avd, ctx);
-		if (ctx->fifo_idx > avd->variant->fifo_slots) {
-			dev_err(avd->dev, "VP%d: invalid fifo slot: %d", status & ~0x100,
-					ctx->fifo_idx);
-		}
-
-		/* a vp is done, kick the pp and hope for the best */
-		/* clang-format off */
-		avd_w32(ctrl, avd->variant->submit_offset,
-				0x2b000000
-				| (avd->variant->revision == 3 ? 0x100 : 0x200)
-				| (ctx->fifo_idx << 4)
-				| avd->variant->fifo_slots);
-		/* clang-format done */
 		goto done;
 	} else {
 		dev_err(avd->dev, "H%d %02d error", status, ctx->fifo_idx);
@@ -561,6 +543,46 @@ static const struct of_device_id avd_of_match[] = {
 
 MODULE_DEVICE_TABLE(of, avd_of_match);
 
+static int avd_create_piodma_iommu_dev(struct avd_dev *avd)
+{
+	int ret;
+	struct device_node *node __free(device_node) = of_get_child_by_name(avd->dev->of_node, "piodma");
+
+	if (!node)
+		return dev_err_probe(avd->dev, -ENODEV,
+				"Failed to get piodma child DT node\n");
+
+	avd->piodma = of_platform_device_create(node, NULL, avd->dev);
+	if (!avd->piodma)
+		return dev_err_probe(avd->dev, -ENODEV, "Failed to create piodma pdev for %pOF\n", node);
+
+	ret = dma_set_mask_and_coherent(&avd->piodma->dev, DMA_BIT_MASK(42));
+	if (ret)
+		goto err_destroy_pdev;
+
+	ret = of_dma_configure(&avd->piodma->dev, node, true);
+	if (ret) {
+		ret = dev_err_probe(avd->dev, ret,
+				"Failed to configure IOMMU child DMA\n");
+		goto err_destroy_pdev;
+	}
+
+	avd->ds1 = iommu_get_domain_for_dev(&avd->piodma->dev);
+	if (IS_ERR(avd->ds1)) {
+		ret = dev_err_probe(avd->dev, PTR_ERR(avd->ds1),
+				"Failed to get default iommu domain for "
+				"piodma device\n");
+		avd->ds1 = NULL;
+		goto err_destroy_pdev;
+	}
+
+	return 0;
+err_destroy_pdev:
+	of_platform_device_destroy(&avd->piodma->dev, NULL);
+	return ret;
+}
+
+
 static int avd_probe(struct platform_device *pdev)
 {
 	struct avd_dev *avd;
@@ -603,11 +625,15 @@ static int avd_probe(struct platform_device *pdev)
 		return PTR_ERR(avd->wrap);
 
 
-	avd->domain = iommu_get_domain_for_dev(avd->dev);
-	if (!avd->domain) {
+	avd->ds0 = iommu_get_domain_for_dev(avd->dev);
+	if (!avd->ds0) {
 		dev_err(avd->dev, "Failed to request iommu");
 		return -EINVAL;
 	}
+
+	ret = avd_create_piodma_iommu_dev(avd);
+	if (ret)
+		return ret;
 
 	ret = request_firmware(&avd->fw, avd->variant->fw_name, avd->dev);
 
@@ -661,6 +687,12 @@ static void avd_remove(struct platform_device *pdev)
 	release_firmware(avd->fw);
 
 	avd_v4l2_cleanup(avd);
+
+	if (avd->piodma) {
+		avd->ds1 = NULL;
+		of_platform_device_destroy(&avd->piodma->dev, NULL);
+		avd->piodma = NULL;
+	}
 
 	pm_runtime_disable(avd->dev);
 	pm_runtime_dont_use_autosuspend(avd->dev);

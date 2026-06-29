@@ -135,7 +135,10 @@ struct avd_dev {
 	void __iomem *ctrl;
 	void __iomem *wrap;
 
-	struct iommu_domain *domain;
+	struct iommu_domain *ds0;
+	struct iommu_domain *ds1;
+
+	struct platform_device *piodma;
 
 	struct mutex vdev_lock;
 	struct mutex dev_mutex;
@@ -165,6 +168,8 @@ struct avd_dev {
 	unsigned long inst_fifo_slots;
 
 	const struct avd_variant *variant;
+
+	u32 woff;
 };
 
 struct avd_ctx {

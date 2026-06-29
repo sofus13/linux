@@ -24,6 +24,11 @@
 			<0x2 0x87400000 0x0 0x4000>;
 		reg-names = "base", "code", "sram", "mbox", "ctrl", "wrap";
 		iommus = <&avd_dart 0>;
+                avd_piodma: piodma {
+                  iommus = <&avd_dart 1>;
+                  phandle = <&avd_piodma>;
+                };
+
 	};
 
 	avd_dart: iommu@287010000 {

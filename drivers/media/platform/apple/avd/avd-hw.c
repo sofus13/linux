@@ -53,6 +53,7 @@ int avd_boot(struct avd_dev *avd)
 
 	avd_w32(mbox, AVD_REG_RUN_CTRL, AVD_RUN_CTRL_UNK_STOP);
 
+	avd_w32(mbox, AVD_REG_MBOX0_STATUS, AVD_MBOX_ENABLE);
 	avd_w32(mbox, AVD_REG_MBOX1_STATUS, AVD_MBOX_ENABLE);
 
 	avd_w32(mbox, AVD_REG_MBOX_IRQ_ENABLE, AVD_MBOX1_NOT_EMPTY);
@@ -71,6 +72,7 @@ void avd_shutdown(struct avd_dev *avd)
 {
 	avd_w32(mbox, AVD_REG_RUN_CTRL, AVD_RUN_CTRL_UNK_STOP);
 	avd_w32(mbox, AVD_REG_FLAG0_CLR, 0x1);
+	avd_w32(mbox, AVD_REG_FLAG1_CLR, 0x1);
 	avd_w32(mbox, AVD_REG_MBOX_IRQ_ENABLE, 0x0);
 }
 

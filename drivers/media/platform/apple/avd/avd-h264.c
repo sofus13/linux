@@ -20,7 +20,8 @@
 #include <media/videobuf2-dma-contig.h>
 
 #include "avd.h"
-#include "avd-inst.h"
+#include "avd-regs.h"
+
 
 struct avd_h264_run {
 	struct avd_run base;
@@ -58,7 +59,92 @@ struct avd_h264_ctx {
 		struct avd_buf inst;
 		struct avd_buf unk;
 	} bufs;
+
+	u32 ipt;
+	struct avd_buf piodma;
 };
+
+/* i have no clue what this is */
+#define INST_DMA1 0 /* (0x14 << 16 | 0x14) */
+#define INST_DMA2 0 /* (0x4000000 | INST_DMA1) */
+#define INST_DMA3 0 /* (0x07 << 16 | 0x07) */
+
+#define VP_SLOT_NUM 4
+#define VP_SLOT_NONE 255
+#define VP_SLOT_START 0xc
+
+#define INST_FIFO_SLOT_NUM 16
+#define INST_FIFO_SLOT_NONE 255
+
+static inline u32 fifo_size(void)
+{
+	return 0x100000 * 12;
+}
+
+static inline u32 swrap(u32 x, u32 w)
+{
+	return x & (w - 1);
+}
+static inline bool boolify(u32 v)
+{
+	return !!(v);
+}
+
+static inline void push(struct avd_dev *avd, struct avd_ctx *ctx, u32 inst)
+{
+	struct avd_h264_ctx *h264_ctx = ctx->priv;
+	((u32*)h264_ctx->piodma.cpu)[h264_ctx->ipt++] = inst;
+}
+
+static inline void push_address(struct avd_dev *avd, struct avd_ctx *ctx,
+				dma_addr_t addr)
+{
+	if (avd->variant->quirks & AVD_QUIRK_LSR) {
+		push(avd, ctx, (addr >> 8));
+	} else {
+		push(avd, ctx, (u32)(addr & 0xffffffff));
+		push(avd, ctx, (u32)(addr >> 32));
+	}
+}
+
+static inline void push_rvra(struct avd_dev *avd, struct avd_ctx *ctx,
+		dma_addr_t addr, u32 offsets[4])
+{
+	if (avd->variant->quirks & AVD_QUIRK_LSR) {
+		for (int i = 0; i < 4; i++)
+			push(avd, ctx, (addr + offsets[i]) >> 7);
+	} else {
+		for (int i = 0; i < 4; i++)
+			push_address(avd, ctx, (addr + offsets[i]));
+	}
+}
+
+
+#ifdef DEBUG_INST
+#define push(inst, name)                                           \
+	do {                                                       \
+		dev_info(ctx->dev->dev, "%8x | %s", (inst), name); \
+		push(avd, ctx, inst);                              \
+	} while (0)
+
+#else
+#define push(inst, name) push(avd, ctx, inst)
+#endif
+
+#ifdef DEBUG_INST_ADDR
+#define pusha(inst, name, i)                                                   \
+	do {                                                                   \
+		dev_info(ctx->dev->dev, "%8llx | %s[%d]", (inst) & 0xffffffff, \
+			 name, i);                                             \
+		dev_info(ctx->dev->dev, "%8llx | %s[%d] (high)", (inst) >> 32, \
+			 name, i);                                             \
+		push_address(avd, ctx, inst);                                  \
+	} while (0)
+
+#else
+#define pusha(inst, name, i) push_address(avd, ctx, inst)
+#endif
+
 
 /* ffmpeg submits wrong timestamp, use first_mb_in_slice as a workaround */
 #define is_new_frame(sl) (sl->first_mb_in_slice == 0) /* (ctx->fh.m2m_ctx->new_frame) */
@@ -482,6 +568,9 @@ static int avd_h264_alloc_bufs(struct avd_ctx *ctx)
 	struct avd_h264_ctx *h264_ctx = ctx->priv;
 	int ret;
 
+	h264_ctx->piodma.cpu = dma_alloc_coherent(&dev->piodma->dev,
+			0x4000, &h264_ctx->piodma.addr, GFP_KERNEL);
+
 	ret = avd_buf_alloc(dev, &h264_ctx->bufs.inst, fifo_size());
 	if (ret) {
 		dev_err(dev->dev, "inst alloc failed\n");
@@ -533,6 +622,8 @@ static void avd_h264_free_bufs(struct avd_ctx *ctx)
 	for (int i = 0; i < 5; i++)
 		avd_buf_free(dev, &h264_ctx->bufs.pps_tile[i]);
 
+	dma_free_coherent(&dev->piodma->dev, 0x4000, h264_ctx->piodma.cpu,
+			h264_ctx->piodma.addr);
 	kfree(h264_ctx);
 }
 
@@ -644,9 +735,6 @@ static int avd_h264_run(struct avd_ctx *ctx)
 	struct avd_h264_ctx *h264_ctx = ctx->priv;
 	struct v4l2_h264_reflist_builder reflist_builder;
 	struct avd_h264_run run;
-	u32 slice_size, slice_parsed;
-	int ret;
-
 	avd_h264_run_preamble(ctx, &run);
 
 	/* Build the P/B{0,1} ref lists. */
@@ -663,50 +751,27 @@ static int avd_h264_run(struct avd_ctx *ctx)
 	avd_run_postamble(ctx, &run.base);
 
 	if (is_new_frame(run.sl)) {
-		ret = alloc_slots(avd, ctx, AVD_CODEC_H264);
-		if (ret) {
-			dev_err(avd->dev, "no free slots: %d", ret);
-			return ret;
-		}
-		avd->variant->configure_stream(ctx->dev, h264_ctx->bufs.inst.addr,
-				     ctx->fifo_idx, ctx->vp_slot);
+		h264_ctx->ipt = 1;
 		stream_hdr(ctx, &run);
-	}
-
-	if (ctx->vp_slot == VP_SLOT_NONE) {
-		/* Only happens if its a multi slice frame and there was an error */
-		dev_err(avd->dev, "no assigned VP slots: %04lx", avd->vp_slots);
-		return -ENOMEM;
 	}
 
 	schedule_delayed_work(&ctx->watchdog_work, msecs_to_jiffies(2000));
 
-	slice_size = stream_slice(ctx, &run);
+	stream_slice(ctx, &run);
+
 
 	if (run.base.bufs.src->flags & V4L2_BUF_FLAG_M2M_HOLD_CAPTURE_BUF) {
-		/* TODO: offset on m1 */
-		u32 reg = (0x1018 | ctx->vp_slot << 8);
-		ret = readl_poll_timeout(
-			avd->ctrl + reg, slice_parsed,
-			slice_parsed >= round_down(slice_size, 8), 10, 40000);
-
-		if (ctx->vp_slot ==
-		    VP_SLOT_NONE) /* an error already happened */
-			return 0;
-
-		if (cancel_delayed_work(&ctx->watchdog_work)) {
-			if (ret) {
-				dev_err(avd->dev,
-					"VP%d: timed out (%02d)!"
-					" size: %08x parsed: %08x",
-					ctx->vp_slot, ctx->fifo_idx, slice_size,
-					slice_parsed);
-				avd_status(avd, ctx->vp_slot);
-				return ret;
-			}
-
-			avd_job_finish(ctx, VB2_BUF_STATE_DONE);
-		}
+		avd_job_finish(ctx, VB2_BUF_STATE_DONE);
+	} else {
+		((u32*)h264_ctx->piodma.cpu)[0] = ((((h264_ctx->ipt - 2) * 4) << 16)
+		| ((0x20000 | avd->woff + 20) & 0x3fffc) | BIT(0));
+		avd_w32(sram, avd->woff, h264_ctx->piodma.addr & 0xffffffff);
+		avd_w32(sram, avd->woff + 4, h264_ctx->piodma.addr >> 32);
+		avd_w32(sram, avd->woff + 8, h264_ctx->ipt * 4);
+		avd_w32(sram, avd->woff + 12, h264_ctx->bufs.inst.addr & 0xffffffff);
+		avd_w32(sram, avd->woff + 16, h264_ctx->bufs.inst.addr >> 32);
+		avd_w32(mbox, AVD_REG_MBOX0_SUBMIT, avd->woff);
+		avd->woff = (avd->woff + 20 + (h264_ctx->ipt * 4)) % 0x4000;
 	}
 
 	return 0;
