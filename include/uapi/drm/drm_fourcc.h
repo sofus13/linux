@@ -1617,6 +1617,19 @@ drm_fourcc_canonicalize_nvidia_format_mod(__u64 modifier)
 #define DRM_FORMAT_MOD_APPLE_GPU_TILED_COMPRESSED fourcc_mod_code(APPLE, 2)
 
 /*
+ * Apple Interchange layout
+ *
+ * Apple GPUs support a second addressing and compression scheme called Interchange.
+ * This is used for framebuffers that are exchanged between multiple hardware
+ * blocks.
+ *
+ * Interchange is similar to AGX, albeit with fixed tile sizes. RGB images have
+ * a tile size of 16x16 pixels, however YUV images use 32x32 tiles for the luma
+ * channel.
+ */
+#define DRM_FORMAT_MOD_APPLE_INTERCHANGE_COMPRESSED fourcc_mod_code(APPLE, 3)
+
+/*
  * AMD modifiers
  *
  * Memory layout:
