@@ -103,6 +103,15 @@ struct dcp_compression_info {
 	u8 pad2;
 } __packed;
 
+struct dcp_interchange_layout {
+	u32 tile_dim;
+	u32 tiles_width;
+	u32 tiles_height;
+	u32 tile_bytes;
+	u32 meta_offset;
+	u32 meta_bytes;
+};
+
 /* Information describing a surface */
 struct dcp_surface {
 	u8 is_tiled;

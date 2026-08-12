@@ -7,6 +7,7 @@
 
 #include "iomfb_internal.h"
 
+#include "iomfb_plane.h"
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_fourcc.h>
@@ -16,17 +17,44 @@
 #include <drm/drm_gem_dma_helper.h>
 #include <drm/drm_plane.h>
 
+#define APPLE_GPU_CACHELINE	16
 #define FRAC_16_16(mult, div)    (((mult) << 16) / (div))
+
+static struct dcp_interchange_layout apple_get_interchange_layout(u32 w, u32 h,
+								  u32 bpp, u32 p,
+								  bool yuv)
+{
+	u32 meta_tile_w, meta_tile_h;
+	struct dcp_interchange_layout layout;
+
+	/* Luma channel has 32x32 tiles */
+	if (yuv && p == 0)
+		layout.tile_dim = 32;
+	else
+		layout.tile_dim = 16;
+
+	layout.tiles_width = DIV_ROUND_UP(w, layout.tile_dim);
+	layout.tiles_height = DIV_ROUND_UP(h, layout.tile_dim);
+	layout.tile_bytes = layout.tile_dim * layout.tile_dim  * DIV_ROUND_UP(bpp, 8);
+	layout.meta_offset = ALIGN(layout.tiles_width * layout.tiles_height * layout.tile_bytes,
+				   APPLE_GPU_CACHELINE);
+
+	meta_tile_w = roundup_pow_of_two(layout.tiles_width);
+	meta_tile_h = roundup_pow_of_two(layout.tiles_height);
+
+	layout.meta_bytes = ALIGN(meta_tile_w * meta_tile_h * 8, APPLE_GPU_CACHELINE);
+
+	return layout;
+}
 
 static int apple_plane_atomic_check(struct drm_plane *plane,
 				    struct drm_atomic_state *state)
 {
-	struct drm_plane_state *new_plane_state;
+	struct drm_plane_state *new_plane_state = drm_atomic_get_new_plane_state(state, plane);;
 	struct drm_crtc_state *crtc_state;
 	struct drm_rect *dst;
+	struct drm_framebuffer *fb = new_plane_state->fb;
 	int ret;
-
-	new_plane_state = drm_atomic_get_new_plane_state(state, plane);
 
 	if (!new_plane_state->crtc)
 		return 0;
@@ -82,12 +110,42 @@ static int apple_plane_atomic_check(struct drm_plane *plane,
 		return -EINVAL;
 	}
 
-	/*
-	 * Pitches have to be 64-byte aligned.
-	 */
-	for (u32 i = 0; i < new_plane_state->fb->format->num_planes; i++)
-		if (new_plane_state->fb->pitches[i] & 63)
-			return -EINVAL;
+	switch (fb->modifier) {
+	case DRM_FORMAT_MOD_APPLE_INTERCHANGE_COMPRESSED:
+		/*
+		 * The GEM object must be big enough for the framebuffer and metadata
+		 */
+		for (u32 i = 0; i < fb->format->num_planes; i++) {
+			u32 w = drm_format_info_plane_width(fb->format, fb->width, i);
+			u32 h = drm_format_info_plane_height(fb->format, fb->height, i);
+			u32 bpp = drm_format_info_bpp(fb->format, i);
+			u32 req_size;
+			struct dcp_interchange_layout l = apple_get_interchange_layout(w, h, bpp, i,
+										       fb->format->is_yuv);
+			struct drm_gem_dma_object *obj = drm_fb_dma_get_gem_obj(fb, i);
+
+			req_size = fb->offsets[0] + l.meta_offset + l.meta_bytes;
+
+			if (req_size > obj->base.size) {
+				dev_err_ratelimited(state->dev->dev,
+						    "plane_atomic_check: required size of %u > %zu\n",
+						    req_size, obj->base.size);
+				return -EINVAL;
+			}
+		}
+		break;
+	case DRM_FORMAT_MOD_LINEAR:
+		/*
+		 * Pitches have to be 64-byte aligned for linear images.
+		 */
+		for (u32 i = 0; i < new_plane_state->fb->format->num_planes; i++)
+			if (new_plane_state->fb->pitches[i] & 63)
+				return -EINVAL;
+		break;
+	default:
+		break;
+	}
+
 
 	/*
 	 * FIXME: dcp can currently only use multi-planar buffers using the same
@@ -248,8 +306,7 @@ static void apple_plane_atomic_update(struct drm_plane *plane,
 		.stride = fb->pitches[0],
 		.width = fb->width,
 		.height = fb->height,
-		.buf_size = fb->height * fb->pitches[0],
-		// .surface_id = req->swap.surf_ids[l],
+		.surface_id = plane->base.id,
 
 		/* Only used for compressed or multiplanar surfaces */
 		.pix_size = 1,
@@ -257,6 +314,7 @@ static void apple_plane_atomic_update(struct drm_plane *plane,
 		.pel_h = 1,
 		.has_comp = 1,
 		.has_planes = 1,
+		.has_compr_info = 1,
 	};
 
 	/* Populate plane information for planar formats */
@@ -264,23 +322,54 @@ static void apple_plane_atomic_update(struct drm_plane *plane,
 	for (int i = 0; fb->format->num_planes && i < fb->format->num_planes; i++) {
 		u32 width = drm_format_info_plane_width(fb->format, fb->width, i);
 		u32 height = drm_format_info_plane_height(fb->format, fb->height, i);
-		u32 bh = drm_format_info_block_height(fb->format, i);
-		u32 bw = drm_format_info_block_width(fb->format, i);
 
 		surf->planes[i] = (struct dcp_plane_info){
 			.width = width,
 			.height = height,
 			.base = fb->offsets[i] - fb->offsets[0],
 			.offset = fb->offsets[i] - fb->offsets[0],
-			.stride = fb->pitches[i],
-			.size = height * fb->pitches[i],
-			.tile_size = bw * bh,
-			.tile_w = bw,
-			.tile_h = bh,
 		};
 
-		if (i > 0)
-			surf->buf_size += surf->planes[i].size;
+		switch (fb->modifier) {
+		case DRM_FORMAT_MOD_APPLE_INTERCHANGE_COMPRESSED:
+			u32 bpp = drm_format_info_bpp(fmt, i);
+			struct dcp_interchange_layout l = apple_get_interchange_layout(width, height, bpp, i, fmt->is_yuv);
+
+			surf->planes[i].tile_w = l.tile_dim;
+			surf->planes[i].tile_h = l.tile_dim;
+			surf->planes[i].stride = l.tiles_width * l.tile_bytes;
+			surf->planes[i].size = l.meta_offset + l.meta_bytes;
+			surf->planes[i].tile_size = l.tile_bytes;
+			surf->planes[i].address_fmt = DCP_ADDR_FMT_INTERCHANGE_TILED;
+
+			surf->compression_info[i] = (struct dcp_compression_info) {
+				.tile_w = l.tile_dim,
+				.tile_h = l.tile_dim,
+				.data_offset = 0,
+				.metadata_offset = l.meta_offset,
+				.meta_bytes = 8,
+				.tiles_w = l.tiles_width,
+				.tiles_h = l.tiles_height,
+				.tile_bytes = l.tile_bytes,
+				.row_stride = l.tiles_width * l.tile_bytes,
+				.compression_type = DCP_COMPRESSION_INTERCHANGE,
+			};
+			break;
+		case DRM_FORMAT_MOD_LINEAR:
+			u32 bh = drm_format_info_block_height(fb->format, i);
+			u32 bw = drm_format_info_block_width(fb->format, i);
+			surf->planes[i].tile_w = bw;
+			surf->planes[i].tile_h = bh;
+			surf->planes[i].stride = fb->pitches[i];
+			surf->planes[i].size = height * fb->pitches[i];
+			surf->planes[i].tile_size = bw * bh;
+			surf->planes[i].address_fmt = DCP_ADDR_FMT_LINEAR;
+			break;
+		default:
+			break;
+		}
+
+		surf->buf_size += surf->planes[i].size;
 	}
 
 	/* the obvious helper call drm_fb_dma_get_gem_addr() adjusts
@@ -426,6 +515,7 @@ static const u32 dcp_overlay_formats_12_x[] = {
 };
 
 u64 apple_format_modifiers[] = {
+	DRM_FORMAT_MOD_APPLE_INTERCHANGE_COMPRESSED,
 	DRM_FORMAT_MOD_LINEAR,
 	DRM_FORMAT_MOD_INVALID
 };
