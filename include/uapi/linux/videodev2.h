@@ -841,6 +841,12 @@ struct v4l2_pix_format {
 #define V4L2_PIX_FMT_PISP_COMP2_BGGR	v4l2_fourcc('P', 'C', '2', 'B') /* PiSP 8-bit mode 2 compressed BGGR bayer */
 #define V4L2_PIX_FMT_PISP_COMP2_MONO	v4l2_fourcc('P', 'C', '2', 'M') /* PiSP 8-bit mode 2 compressed monochrome */
 
+/* Apple Interchange, compressed and tiled layouts */
+#define V4L2_PIX_FMT_APPLE_COMP_NV12	v4l2_fourcc('A', 'V', '1', '2') /* Apple compressed NV12 */
+#define V4L2_PIX_FMT_APPLE_COMP_NV20	v4l2_fourcc('A', 'V', '2', '0') /* Apple compressed NV20 */
+#define V4L2_PIX_FMT_APPLE_COMP_P010	v4l2_fourcc('A', '0', '1', '0') /* Apple compressed P010 */
+#define V4L2_PIX_FMT_APPLE_COMP_P210	v4l2_fourcc('A', '2', '1', '0') /* Apple compressed P210 */
+
 /* Renesas RZ/V2H CRU packed formats. 64-bit units with contiguous pixels */
 #define V4L2_PIX_FMT_RAW_CRU10	v4l2_fourcc('C', 'R', '1', '0')
 #define V4L2_PIX_FMT_RAW_CRU12	v4l2_fourcc('C', 'R', '1', '2')

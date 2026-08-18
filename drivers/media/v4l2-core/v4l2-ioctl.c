@@ -1558,6 +1558,10 @@ static void v4l_fill_fmtdesc(struct v4l2_fmtdesc *fmt)
 		case V4L2_PIX_FMT_PISP_COMP2_GBRG: descr = "PiSP 8b GBGB/RGRG mode2 compr"; break;
 		case V4L2_PIX_FMT_PISP_COMP2_BGGR: descr = "PiSP 8b BGBG/GRGR mode2 compr"; break;
 		case V4L2_PIX_FMT_PISP_COMP2_MONO: descr = "PiSP 8b monochrome mode2 compr"; break;
+		case V4L2_PIX_FMT_APPLE_COMP_NV12: descr = "Apple tiled comp NV12"; break;
+		case V4L2_PIX_FMT_APPLE_COMP_NV20: descr = "Apple tiled comp NV20"; break;
+		case V4L2_PIX_FMT_APPLE_COMP_P010: descr = "Apple tiled comp P010"; break;
+		case V4L2_PIX_FMT_APPLE_COMP_P210: descr = "Apple tiled comp P210"; break;
 		default:
 			if (fmt->description[0])
 				return;
