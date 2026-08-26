@@ -26,6 +26,15 @@ static bool avd_image_fmt_match(enum avd_image_fmt fmt1,
 	       fmt1 == AVD_IMG_FMT_ANY;
 }
 
+static bool avd_fmt_is_compressed(u32 fmt)
+{
+	return fmt == V4L2_PIX_FMT_APPLE_COMP_NV12 ||
+		fmt == V4L2_PIX_FMT_APPLE_COMP_NV20 ||
+		fmt == V4L2_PIX_FMT_APPLE_COMP_P010 ||
+		fmt == V4L2_PIX_FMT_APPLE_COMP_P210;
+
+}
+
 static bool avd_image_fmt_changed(struct avd_ctx *ctx,
 				  enum avd_image_fmt image_fmt)
 {
@@ -79,9 +88,17 @@ static void avd_fill_decoded_pixfmt(struct avd_ctx *ctx,
 	v4l2_fill_pixfmt_mp(pix_mp, pix_mp->pixelformat, pix_mp->width,
 			    pix_mp->height);
 
+	if (avd_fmt_is_compressed(pix_mp->pixelformat))
+		pix_mp->plane_fmt[0].sizeimage = 0;
+
 	ctx->comp.start_offset = pix_mp->plane_fmt[0].sizeimage;
 	fill_comp(&ctx->comp, ctx->image_fmt, pix_mp->width, pix_mp->height);
 	pix_mp->plane_fmt[0].sizeimage += ctx->comp.size;
+
+	if (avd_fmt_is_compressed(pix_mp->pixelformat))
+		pix_mp->plane_fmt[0].bytesperline =
+			ctx->comp.size / pix_mp->height;
+
 	if (ctx->coded_fmt_desc->ops->adjust_decoded_fmt)
 		ctx->coded_fmt_desc->ops->adjust_decoded_fmt(ctx, pix_mp);
 }
@@ -108,6 +125,7 @@ void avd_reset_decoded_fmt(struct avd_ctx *ctx)
 	f->type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
 	f->fmt.pix_mp.width = ctx->coded_fmt.fmt.pix_mp.width;
 	f->fmt.pix_mp.height = ctx->coded_fmt.fmt.pix_mp.height;
+	f->fmt.pix_mp.num_planes = 1;
 	avd_fill_decoded_pixfmt(ctx, &f->fmt.pix_mp);
 }
 
@@ -212,6 +230,22 @@ static const struct avd_ctrls avd_hevc_ctrls = {
 
 static const struct avd_decoded_fmt_desc avd_hevc_decoded_fmts[] = {
 	{
+		.fourcc = V4L2_PIX_FMT_APPLE_COMP_NV12,
+		.image_fmt = AVD_IMG_FMT_420_8BIT,
+	},
+	{
+		.fourcc = V4L2_PIX_FMT_APPLE_COMP_NV20,
+		.image_fmt = AVD_IMG_FMT_420_10BIT,
+	},
+	{
+		.fourcc = V4L2_PIX_FMT_APPLE_COMP_P010,
+		.image_fmt = AVD_IMG_FMT_422_8BIT,
+	},
+	{
+		.fourcc = V4L2_PIX_FMT_APPLE_COMP_P210,
+		.image_fmt = AVD_IMG_FMT_422_10BIT,
+	},
+	{
 		.fourcc = V4L2_PIX_FMT_NV12,
 		.image_fmt = AVD_IMG_FMT_420_8BIT,
 	},
@@ -286,6 +320,22 @@ static const struct avd_ctrls avd_h264_ctrls = {
 
 static const struct avd_decoded_fmt_desc avd_h264_decoded_fmts[] = {
 	{
+		.fourcc = V4L2_PIX_FMT_APPLE_COMP_NV12,
+		.image_fmt = AVD_IMG_FMT_420_8BIT,
+	},
+	{
+		.fourcc = V4L2_PIX_FMT_APPLE_COMP_NV20,
+		.image_fmt = AVD_IMG_FMT_420_10BIT,
+	},
+	{
+		.fourcc = V4L2_PIX_FMT_APPLE_COMP_P010,
+		.image_fmt = AVD_IMG_FMT_422_8BIT,
+	},
+	{
+		.fourcc = V4L2_PIX_FMT_APPLE_COMP_P210,
+		.image_fmt = AVD_IMG_FMT_422_10BIT,
+	},
+	{
 		.fourcc = V4L2_PIX_FMT_NV12,
 		.image_fmt = AVD_IMG_FMT_420_8BIT,
 	},
@@ -327,6 +377,22 @@ static const struct avd_ctrls avd_vp9_ctrls = {
 
 static const struct avd_decoded_fmt_desc avd_vp9_decoded_fmts[] = {
 	{
+		.fourcc = V4L2_PIX_FMT_APPLE_COMP_NV12,
+		.image_fmt = AVD_IMG_FMT_420_8BIT,
+	},
+	{
+		.fourcc = V4L2_PIX_FMT_APPLE_COMP_NV20,
+		.image_fmt = AVD_IMG_FMT_420_10BIT,
+	},
+	{
+		.fourcc = V4L2_PIX_FMT_APPLE_COMP_P010,
+		.image_fmt = AVD_IMG_FMT_422_8BIT,
+	},
+	{
+		.fourcc = V4L2_PIX_FMT_APPLE_COMP_P210,
+		.image_fmt = AVD_IMG_FMT_422_10BIT,
+	},
+	{
 		.fourcc = V4L2_PIX_FMT_NV12,
 		.image_fmt = AVD_IMG_FMT_420_8BIT,
 	},
@@ -345,6 +411,22 @@ static const struct avd_decoded_fmt_desc avd_vp9_decoded_fmts[] = {
 };
 
 static const struct avd_decoded_fmt_desc avd_av1_decoded_fmts[] = {
+	{
+		.fourcc = V4L2_PIX_FMT_APPLE_COMP_NV12,
+		.image_fmt = AVD_IMG_FMT_420_8BIT,
+	},
+	{
+		.fourcc = V4L2_PIX_FMT_APPLE_COMP_NV20,
+		.image_fmt = AVD_IMG_FMT_420_10BIT,
+	},
+	{
+		.fourcc = V4L2_PIX_FMT_APPLE_COMP_P010,
+		.image_fmt = AVD_IMG_FMT_422_8BIT,
+	},
+	{
+		.fourcc = V4L2_PIX_FMT_APPLE_COMP_P210,
+		.image_fmt = AVD_IMG_FMT_422_10BIT,
+	},
 	{
 		.fourcc = V4L2_PIX_FMT_NV12,
 		.image_fmt = AVD_IMG_FMT_420_8BIT,
@@ -963,7 +1045,11 @@ void avd_run_preamble(struct avd_ctx *ctx, struct avd_run *run)
 			      ctx->decoded_fmt.fmt.pix_mp.height;
 
 	run->comp_out = run->y_out + ctx->comp.start_offset;
-	ctx->decomp = true;
+	ctx->decomp =
+		!avd_fmt_is_compressed(ctx->decoded_fmt.fmt.pix_mp.pixelformat);
+
+	if (!ctx->decomp)
+		pr_info("avd: using compression!\n");
 
 	dst = vb2_to_avd_decoded_buf(&run->bufs.dst->vb2_buf);
 	memcpy(&dst->comp, &ctx->comp, sizeof(ctx->comp));
