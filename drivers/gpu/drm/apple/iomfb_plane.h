@@ -109,6 +109,7 @@ struct dcp_interchange_layout {
 	u32 tiles_height;
 	u32 tile_bytes;
 	u32 meta_offset;
+	u32 meta_tile_bytes;
 	u32 meta_bytes;
 };
 

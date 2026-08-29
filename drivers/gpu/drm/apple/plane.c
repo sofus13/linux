@@ -28,10 +28,13 @@ static struct dcp_interchange_layout apple_get_interchange_layout(u32 w, u32 h,
 	struct dcp_interchange_layout layout;
 
 	/* Luma channel has 32x32 tiles */
-	if (yuv && p == 0)
+	if (yuv && p == 0) {
 		layout.tile_dim = 32;
-	else
+		layout.meta_tile_bytes = 32;
+	} else {
 		layout.tile_dim = 16;
+		layout.meta_tile_bytes = 8;
+	}
 
 	layout.tiles_width = DIV_ROUND_UP(w, layout.tile_dim);
 	layout.tiles_height = DIV_ROUND_UP(h, layout.tile_dim);
@@ -42,7 +45,7 @@ static struct dcp_interchange_layout apple_get_interchange_layout(u32 w, u32 h,
 	meta_tile_w = roundup_pow_of_two(layout.tiles_width);
 	meta_tile_h = roundup_pow_of_two(layout.tiles_height);
 
-	layout.meta_bytes = ALIGN(meta_tile_w * meta_tile_h * 8, APPLE_GPU_CACHELINE);
+	layout.meta_bytes = ALIGN(meta_tile_w * meta_tile_h * layout.meta_tile_bytes, APPLE_GPU_CACHELINE);
 
 	return layout;
 }
@@ -347,7 +350,7 @@ static void apple_plane_atomic_update(struct drm_plane *plane,
 				.tile_h = l.tile_dim,
 				.data_offset = 0,
 				.metadata_offset = l.meta_offset,
-				.meta_bytes = 8,
+				.meta_bytes = l.meta_tile_bytes,
 				.tiles_w = l.tiles_width,
 				.tiles_h = l.tiles_height,
 				.tile_bytes = l.tile_bytes,
