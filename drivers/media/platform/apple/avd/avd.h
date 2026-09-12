@@ -97,6 +97,18 @@ struct avd_vp9_decoded_buffer_info {
 	unsigned int bit_depth : 4;
 };
 
+struct avd_av1_decoded_buffer_info {
+	unsigned short width;
+	unsigned short height;
+	unsigned short upscaled_width;
+	unsigned int bit_depth : 4;
+	enum v4l2_av1_frame_type frame_type;
+	u32 order_hints[V4L2_AV1_TOTAL_REFS_PER_FRAME];
+	u8 ref_frame_idx[V4L2_AV1_REFS_PER_FRAME];
+	bool intrabc;
+	size_t color_size;
+};
+
 struct avd_hevc_decoded_buffer_info {
 	bool is_intra;
 };
@@ -116,6 +128,7 @@ struct avd_decoded_buffer {
 	union {
 		struct avd_vp9_decoded_buffer_info vp9;
 		struct avd_hevc_decoded_buffer_info hevc;
+		struct avd_av1_decoded_buffer_info av1;
 	};
 };
 
@@ -256,6 +269,7 @@ void avd_run_postamble(struct avd_ctx *ctx, struct avd_run *run);
 extern const struct avd_coded_fmt_ops avd_h264_fmt_ops;
 extern const struct avd_coded_fmt_ops avd_hevc_fmt_ops;
 extern const struct avd_coded_fmt_ops avd_vp9_fmt_ops;
+extern const struct avd_coded_fmt_ops avd_av1_fmt_ops;
 
 extern const struct v4l2_ctrl_ops avd_ctrl_ops;
 extern const struct v4l2_ioctl_ops avd_ioctl_ops;
