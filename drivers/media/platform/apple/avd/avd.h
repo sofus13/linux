@@ -239,6 +239,8 @@ void avd_job_finish(struct avd_ctx *ctx, enum vb2_buffer_state result);
 void avd_run_preamble(struct avd_ctx *ctx, struct avd_run *run);
 void avd_run_postamble(struct avd_ctx *ctx, struct avd_run *run);
 
+extern const struct avd_coded_fmt_ops avd_h264_fmt_ops;
+
 extern const struct v4l2_ctrl_ops avd_ctrl_ops;
 extern const struct v4l2_ioctl_ops avd_ioctl_ops;
 extern const struct vb2_ops avd_queue_ops;
