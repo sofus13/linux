@@ -227,6 +227,29 @@ static const struct avd_ctrls avd_h264_ctrls = {
 	.num_ctrls = ARRAY_SIZE(avd_h264_ctrl_descs),
 };
 
+static const struct avd_ctrl_desc avd_vp9_ctrl_descs[] = {
+	{
+		.cfg.id = V4L2_CID_STATELESS_VP9_FRAME,
+		.cfg.ops = &avd_ctrl_ops,
+	},
+	{
+		.cfg.id = V4L2_CID_STATELESS_VP9_COMPRESSED_HDR,
+	},
+	{
+		.cfg.id = V4L2_CID_MPEG_VIDEO_VP9_PROFILE,
+		.cfg.min = V4L2_MPEG_VIDEO_VP9_PROFILE_0,
+		.cfg.max = V4L2_MPEG_VIDEO_VP9_PROFILE_2,
+		.cfg.menu_skip_mask =
+			BIT(V4L2_MPEG_VIDEO_VP9_PROFILE_1),
+		.cfg.def = V4L2_MPEG_VIDEO_VP9_PROFILE_0,
+	},
+};
+
+static const struct avd_ctrls avd_vp9_ctrls = {
+	.ctrls = avd_vp9_ctrl_descs,
+	.num_ctrls = ARRAY_SIZE(avd_vp9_ctrl_descs),
+};
+
 static const struct avd_coded_fmt_desc avd_coded_fmts[] = {
 	{
 		.fourcc = V4L2_PIX_FMT_H264_SLICE,
@@ -242,6 +265,20 @@ static const struct avd_coded_fmt_desc avd_coded_fmts[] = {
 		.ops = &avd_h264_fmt_ops,
 		.subsystem_flags = VB2_V4L2_FL_SUPPORTS_M2M_HOLD_CAPTURE_BUF,
 		.capability = AVD_CAPABILITY_H264,
+	},
+	{
+		.fourcc = V4L2_PIX_FMT_VP9_FRAME,
+		.frmsize = {
+			.min_width = 64,
+			.max_width = 16384,
+			.step_width = 64,
+			.min_height = 64,
+			.max_height = 16384,
+			.step_height = 16,
+		},
+		.ctrls = &avd_vp9_ctrls,
+		.ops = &avd_vp9_fmt_ops,
+		.capability = AVD_CAPABILITY_VP9,
 	},
 };
 
