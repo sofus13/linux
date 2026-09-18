@@ -306,6 +306,25 @@ static const struct avd_ctrls avd_vp9_ctrls = {
 	.num_ctrls = ARRAY_SIZE(avd_vp9_ctrl_descs),
 };
 
+static const struct avd_ctrl_desc avd_av1_ctrl_descs[] = {
+	{
+		.cfg.id = V4L2_CID_STATELESS_AV1_SEQUENCE,
+		.cfg.ops = &avd_ctrl_ops,
+	},
+	{
+		.cfg.id = V4L2_CID_STATELESS_AV1_TILE_GROUP_ENTRY,
+		.cfg.dims = { V4L2_AV1_MAX_TILE_COUNT },
+	},
+	{
+		.cfg.id = V4L2_CID_STATELESS_AV1_FRAME,
+	},
+};
+
+static const struct avd_ctrls avd_av1_ctrls = {
+	.ctrls = avd_av1_ctrl_descs,
+	.num_ctrls = ARRAY_SIZE(avd_av1_ctrl_descs),
+};
+
 static const struct avd_coded_fmt_desc avd_coded_fmts[] = {
 	{
 		.fourcc = V4L2_PIX_FMT_HEVC_SLICE,
@@ -349,6 +368,20 @@ static const struct avd_coded_fmt_desc avd_coded_fmts[] = {
 		.ctrls = &avd_vp9_ctrls,
 		.ops = &avd_vp9_fmt_ops,
 		.capability = AVD_CAPABILITY_VP9,
+	},
+	{
+		.fourcc = V4L2_PIX_FMT_AV1_FRAME,
+		.frmsize = {
+			.min_width = 64,
+			.max_width = 16384,
+			.step_width = 64,
+			.min_height = 64,
+			.max_height = 16384,
+			.step_height = 16,
+		},
+		.ctrls = &avd_av1_ctrls,
+		.ops = &avd_av1_fmt_ops,
+		.capability = AVD_CAPABILITY_AV1,
 	},
 };
 
