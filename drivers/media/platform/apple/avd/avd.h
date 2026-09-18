@@ -97,6 +97,10 @@ struct avd_vp9_decoded_buffer_info {
 	unsigned int bit_depth : 4;
 };
 
+struct avd_hevc_decoded_buffer_info {
+	bool is_intra;
+};
+
 struct avd_comp {
 	u32 size;
 	/* offset to start of compressed data */
@@ -111,6 +115,7 @@ struct avd_decoded_buffer {
 	struct avd_comp comp;
 	union {
 		struct avd_vp9_decoded_buffer_info vp9;
+		struct avd_hevc_decoded_buffer_info hevc;
 	};
 };
 
@@ -247,6 +252,7 @@ void avd_run_preamble(struct avd_ctx *ctx, struct avd_run *run);
 void avd_run_postamble(struct avd_ctx *ctx, struct avd_run *run);
 
 extern const struct avd_coded_fmt_ops avd_h264_fmt_ops;
+extern const struct avd_coded_fmt_ops avd_hevc_fmt_ops;
 extern const struct avd_coded_fmt_ops avd_vp9_fmt_ops;
 
 extern const struct v4l2_ctrl_ops avd_ctrl_ops;
