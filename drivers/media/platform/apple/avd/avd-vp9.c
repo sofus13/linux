@@ -189,7 +189,6 @@ struct avd_vp9_ctx {
 	} bufs;
 	struct avd_vp9_frame_info cur;
 	struct avd_vp9_frame_info last;
-	u8 submit_num;
 };
 
 static void set_refs(struct avd_ctx *ctx, struct avd_vp9_run *run)
@@ -454,7 +453,6 @@ static void set_header(struct avd_ctx *ctx, struct avd_vp9_run *run)
 static void set_tiles(struct avd_ctx *ctx, struct avd_vp9_run *run)
 {
 	const struct v4l2_ctrl_vp9_frame *frame = run->decode_params;
-	struct avd_vp9_ctx *vp9_ctx = ctx->priv;
 	struct vb2_v4l2_buffer *src = v4l2_m2m_next_src_buf(ctx->fh.m2m_ctx);
 	const u8 *data = vb2_plane_vaddr(&src->vb2_buf, 0);
 
@@ -471,7 +469,6 @@ static void set_tiles(struct avd_ctx *ctx, struct avd_vp9_run *run)
 
 	for (int row = 0; row < num_tile_rows; row++)
 		for (int col = 0; col < num_tile_cols; col++) {
-			ctx->job.num++;
 			if (row == num_tile_rows - 1 &&
 			    col == num_tile_cols - 1) {
 				tile_size = size;
@@ -506,7 +503,7 @@ static void set_tiles(struct avd_ctx *ctx, struct avd_vp9_run *run)
 
 			offset += tile_size;
 			size -= tile_size;
-			vp9_ctx->submit_num++;
+			avd_end_segment(ctx, true);
 		}
 }
 
@@ -791,7 +788,7 @@ static int avd_vp9_run(struct avd_ctx *ctx)
 	update_ctx_cur_info(vp9_ctx, dst, run.decode_params);
 
 	set_header(ctx, &run);
-	vp9_ctx->submit_num = 0;
+	avd_end_segment(ctx, false);
 	set_tiles(ctx, &run);
 	avd_run_postamble(ctx, &run.base);
 
@@ -1039,34 +1036,10 @@ static enum avd_image_fmt avd_vp9_get_image_fmt(struct avd_ctx *ctx,
 #undef BIT_DEPTH
 }
 
-static void avd_vp9_submit(struct avd_ctx *ctx)
-{
-	struct avd_vp9_ctx *vp9_ctx = ctx->priv;
-	struct avd_dev *avd = ctx->dev;
-	u32 submit_mask = ctx->dev->variant->revision == 3 ?
-				  AVD_OP_EXEC_REV3_VP9_MASK :
-				  0;
-
-	writel(AVD_OP_EXEC | submit_mask |
-		       AVD_OP_EXEC_FLAG_START_REV4(avd->variant->revision ==
-						   4) |
-		       AVD_OP_EXEC_FLAG_START_REV3(avd->variant->revision ==
-						   3) |
-		       AVD_OP_EXEC_FIFO_IDX(ctx->fifo_idx) |
-		       AVD_OP_EXEC_FIFO_MASK(avd->variant->fifo_slots),
-	       avd->ctrl + avd->variant->submit_offset);
-	for (int i = 0; i < vp9_ctx->submit_num - 1; i++)
-		writel(AVD_OP_EXEC | submit_mask |
-			       AVD_OP_EXEC_FIFO_IDX(ctx->fifo_idx) |
-			       AVD_OP_EXEC_FIFO_MASK(avd->variant->fifo_slots),
-		       avd->ctrl + avd->variant->submit_offset);
-}
-
 const struct avd_coded_fmt_ops avd_vp9_fmt_ops = {
 	.start = avd_vp9_start,
 	.stop = avd_vp9_stop,
 	.run = avd_vp9_run,
 	.done = avd_vp9_done,
-	.submit = avd_vp9_submit,
 	.get_image_fmt = avd_vp9_get_image_fmt,
 };

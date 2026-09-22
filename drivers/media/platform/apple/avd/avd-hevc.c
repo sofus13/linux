@@ -90,7 +90,6 @@ struct avd_hevc_ctx {
 		struct avd_buf lf_left_info;
 		struct avd_buf sw_left;
 	} bufs;
-	int submit_num;
 };
 
 static void stream_refs(struct avd_ctx *ctx, struct avd_hevc_run *run)
@@ -813,7 +812,6 @@ static void stream_slices(struct avd_ctx *ctx, struct avd_hevc_run *run)
 {
 	const struct v4l2_ctrl_hevc_sps *sps = run->sps;
 	const struct v4l2_ctrl_hevc_pps *pps = run->pps;
-	struct avd_hevc_ctx *hevc_ctx = ctx->priv;
 	const struct v4l2_ctrl_hevc_slice_params *sl;
 	struct avd_hevc_tile_info *tile_info = &run->tile_info;
 	bool tiles_enabled, first_slice, first_segment;
@@ -861,8 +859,6 @@ static void stream_slices(struct avd_ctx *ctx, struct avd_hevc_run *run)
 		for (i = 0; i < to; i++) {
 			first_segment = i == 0;
 			first_slice = s == 0;
-
-			ctx->job.num++;
 
 			if (tiles_enabled && to > 1) {
 				if (i < sl->num_entry_point_offsets) {
@@ -953,13 +949,12 @@ static void stream_slices(struct avd_ctx *ctx, struct avd_hevc_run *run)
 
 			if (slice_flag & NEW_TILE_ID)
 				pos++;
+			avd_end_segment(ctx, slice_flag & NEW_TILE_ID);
 
 			slice_segment_offset += new_offset;
 		}
 		offset += sl->bit_size / 8;
 	}
-
-	hevc_ctx->submit_num = pos;
 }
 
 static void update_dec_buf_info(struct avd_decoded_buffer *buf,
@@ -1275,6 +1270,7 @@ static int avd_hevc_run(struct avd_ctx *ctx)
 		goto done;
 
 	set_header(ctx, &run);
+	avd_end_segment(ctx, false);
 	stream_slices(ctx, &run);
 	avd_run_postamble(ctx, &run.base);
 
@@ -1282,8 +1278,6 @@ static int avd_hevc_run(struct avd_ctx *ctx)
 done:
 	kfree(run.tile_info.ctb_addr_rs_to_ts);
 	kfree(run.tile_info.tile_ids);
-	kfree(ctx->job.segments);
-	ctx->job.segments = NULL;
 	return ret;
 }
 
@@ -1295,32 +1289,11 @@ static int avd_hevc_try_ctrl(struct avd_ctx *ctx, struct v4l2_ctrl *ctrl)
 	return 0;
 }
 
-static void avd_hevc_submit(struct avd_ctx *ctx)
-{
-	struct avd_hevc_ctx *hevc_ctx = ctx->priv;
-	struct avd_dev *avd = ctx->dev;
-
-	writel(AVD_OP_EXEC |
-		       AVD_OP_EXEC_FLAG_START_REV4(avd->variant->revision ==
-						   4) |
-		       AVD_OP_EXEC_FLAG_START_REV3(avd->variant->revision ==
-						   3) |
-		       AVD_OP_EXEC_FIFO_IDX(ctx->fifo_idx) |
-		       AVD_OP_EXEC_FIFO_MASK(avd->variant->fifo_slots),
-	       avd->ctrl + avd->variant->submit_offset);
-	for (int i = 0; i < hevc_ctx->submit_num - 1; i++) {
-		writel(AVD_OP_EXEC | AVD_OP_EXEC_FIFO_IDX(ctx->fifo_idx) |
-			       AVD_OP_EXEC_FIFO_MASK(avd->variant->fifo_slots),
-		       avd->ctrl + avd->variant->submit_offset);
-	}
-}
-
 const struct avd_coded_fmt_ops avd_hevc_fmt_ops = {
 	.adjust_decoded_fmt = avd_hevc_adjust_decoded_fmt,
 	.start = avd_hevc_start,
 	.stop = avd_hevc_stop,
 	.run = avd_hevc_run,
-	.submit = avd_hevc_submit,
 	.try_ctrl = avd_hevc_try_ctrl,
 	.get_image_fmt = avd_hevc_get_image_fmt,
 };

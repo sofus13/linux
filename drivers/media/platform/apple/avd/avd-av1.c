@@ -216,7 +216,6 @@ struct avd_av1_run {
 };
 
 struct avd_av1_ctx {
-	u8 submit_num;
 	struct {
 		struct avd_buf probs;
 		struct avd_buf seg;
@@ -986,7 +985,6 @@ static void set_header(struct avd_ctx *ctx, struct avd_av1_run *run)
 
 static void set_tiles(struct avd_ctx *ctx, struct avd_av1_run *run)
 {
-	struct avd_av1_ctx *av1_ctx = ctx->priv;
 	const struct v4l2_ctrl_av1_frame *frame = run->frame;
 	const struct v4l2_ctrl_av1_sequence *seq = run->seq;
 	const struct v4l2_ctrl_av1_tile_group_entry *tile_group;
@@ -996,11 +994,8 @@ static void set_tiles(struct avd_ctx *ctx, struct avd_av1_run *run)
 		seq->flags & V4L2_AV1_SEQUENCE_FLAG_USE_128X128_SUPERBLOCK ? 5 :
 									     4;
 
-	av1_ctx->submit_num = tile_info->tile_cols * tile_info->tile_rows;
-
 	for (row = 0; row < tile_info->tile_rows; row++) {
 		for (col = 0; col < tile_info->tile_cols; col++) {
-			ctx->job.num++;
 			tile_id = row * tile_info->tile_cols + col;
 			tile_group = &run->tile_group[tile_id];
 
@@ -1047,6 +1042,7 @@ static void set_tiles(struct avd_ctx *ctx, struct avd_av1_run *run)
 #ifdef DEBUG_INST
 			pr_info("\n");
 #endif
+			avd_end_segment(ctx, true);
 		}
 	}
 }
@@ -1299,6 +1295,7 @@ static int avd_av1_run(struct avd_ctx *ctx)
 	avd_av1_alloc_work_bufs(ctx, &run);
 
 	set_header(ctx, &run);
+	avd_end_segment(ctx, false);
 	set_tiles(ctx, &run);
 
 	avd_run_postamble(ctx, &run.base);
@@ -1388,24 +1385,6 @@ static enum avd_image_fmt avd_av1_get_image_fmt(struct avd_ctx *ctx,
 #undef BIT_DEPTH
 }
 
-static void avd_av1_submit(struct avd_ctx *ctx)
-{
-	struct avd_av1_ctx *av1_ctx = ctx->priv;
-	struct avd_dev *avd = ctx->dev;
-
-	writel(AVD_OP_EXEC |
-		       AVD_OP_EXEC_FLAG_START_REV4(avd->variant->revision ==
-						   4) |
-		       AVD_OP_EXEC_FIFO_IDX(ctx->fifo_idx) |
-		       AVD_OP_EXEC_FIFO_MASK(avd->variant->fifo_slots),
-	       avd->ctrl + avd->variant->submit_offset);
-	for (int i = 0; i < av1_ctx->submit_num - 1; i++) {
-		writel(AVD_OP_EXEC | AVD_OP_EXEC_FIFO_IDX(ctx->fifo_idx) |
-			       AVD_OP_EXEC_FIFO_MASK(avd->variant->fifo_slots),
-		       avd->ctrl + avd->variant->submit_offset);
-	}
-}
-
 static void avd_av1_adjust_decoded_fmt(struct avd_ctx *ctx,
 				       struct v4l2_pix_format_mplane *pix_mp)
 {
@@ -1441,7 +1420,6 @@ const struct avd_coded_fmt_ops avd_av1_fmt_ops = {
 	.start = avd_av1_start,
 	.stop = avd_av1_stop,
 	.run = avd_av1_run,
-	.submit = avd_av1_submit,
 	.try_ctrl = avd_av1_try_ctrl,
 	.get_image_fmt = avd_av1_get_image_fmt,
 };

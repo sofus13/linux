@@ -16,6 +16,8 @@
 #include <linux/iommu.h>
 #include <linux/reset.h>
 #include <linux/delay.h>
+#include <linux/dev_printk.h>
+#include <linux/iopoll.h>
 
 #include <media/videobuf2-dma-contig.h>
 #include <media/videobuf2-v4l2.h>
@@ -82,7 +84,7 @@ void fill_comp(struct avd_comp *comp, enum avd_image_fmt image_fmt, u32 width,
 
 int avd_buf_alloc(struct avd_dev *avd, struct avd_buf *buf, size_t size)
 {
-	if (!buf->cpu && size < buf->size)
+	if (buf->cpu && size < buf->size)
 		return 0;
 	else if (buf->cpu)
 		avd_buf_free(avd, buf);
@@ -121,24 +123,21 @@ avd_get_ref_buf(struct avd_ctx *ctx, struct vb2_v4l2_buffer *dst, u64 timestamp)
 	return vb2_to_avd_decoded_buf(buf);
 }
 
-static int avd_wait_submission_queue(struct avd_ctx *ctx, int vp)
+int avd_end_segment(struct avd_ctx *ctx, bool update_submit)
 {
-	struct avd_dev *avd = ctx->dev;
-	u32 max = readl_relaxed(avd->ctrl +
-				avd->variant->submit_queue_max_offset + vp * 4);
-	u32 cur = readl_relaxed(avd->ctrl +
-				avd->variant->submit_queue_status_offset + vp * 4);
+	struct avd_job *job = &ctx->job;
+	struct avd_segment *seg = &job->segments[job->num];
 
-	if (cur == max) {
-		dev_err(avd->dev, "instruction que full! %d/%d", cur, max);
-		return 1;
-	}
+	/* avd_segment includes piodma_cmd which is not transferred */
+	seg->piodma_cmd =
+		AVD_PIODMA_CMD_SIZE((sizeof(struct avd_segment) - 8) / 4);
+	seg->piodma_cmd |= AVD_PIODMA_CMD_DEST(job->dest);
+	seg->piodma_cmd |= AVD_PIODMA_CMD_CONST;
 
-	if (cur >= max / 2) {
-		/* TODO: to high? low? Has weird side effects??? */
-		usleep_range(500, 650);
-	}
-	return 0;
+	job->num++;
+	if (update_submit)
+		job->num_submit++;
+	return job->num >= job->num_alloc;
 }
 
 int avd_init_job(struct avd_ctx *ctx, enum avd_codec codec, size_t segments)
@@ -147,58 +146,89 @@ int avd_init_job(struct avd_ctx *ctx, enum avd_codec codec, size_t segments)
 	struct avd_job *job = &ctx->job;
 
 	job->codec = codec;
+	job->dest = 0x1000;
 	job->num = 0;
-	job->segments = kzalloc_objs(*job->segments, segments, GFP_KERNEL);
-	if (!job->segments)
-		ret = -ENOMEM;
+	job->num_submit = 0;
+	job->num_alloc = segments;
+	ret = avd_buf_alloc(ctx->dev, &job->buf, job->num_alloc * sizeof(*job->segments));
+	job->segments = job->buf.cpu;
+	memset(job->buf.cpu, 0, job->buf.size);
 	return ret;
 }
+
+struct avd_cm3_job {
+	enum avd_codec codec;
+	u32 dest;
+	u32 num;
+	u32 num_submit;
+	u64 iova;
+	u64 insn;
+};
 
 int avd_submit_job(struct avd_ctx *ctx)
 {
 	struct avd_dev *avd = ctx->dev;
-	struct avd_job *sub = &ctx->job;
-	struct avd_segment *seg;
-	int i, idx = 0, vp = 0;
-	void __iomem *reg;
-	u32 exec_mask = sub->codec == AVD_CODEC_VP9 &&
-					avd->variant->revision == 3 ?
-				AVD_OP_EXEC_REV3_VP9_MASK :
-				0;
-	u32 exec_rev_flag =
-		AVD_OP_EXEC_FLAG_START_REV4(avd->variant->revision == 4) |
-		AVD_OP_EXEC_FLAG_START_REV3(avd->variant->revision == 3);
-
-	ctx->fifo_idx = 0;
-	for (i = 0; i < sub->codec; i++)
-		vp += avd->variant->vp_slots[i];
+	struct avd_job *job = &ctx->job;
+	int submit_off = 0x100;
+	struct avd_cm3_job submit = (struct avd_cm3_job) {
+		.codec = job->codec,
+		.dest = job->dest,
+		.num = job->num,
+		.num_submit = job->num_submit,
+		.iova = job->buf.addr,
+		.insn = ctx->inst.addr,
+	};
 
 	schedule_delayed_work(&ctx->watchdog_work, msecs_to_jiffies(2000));
-	avd->variant->configure_stream(avd, ctx->inst.addr, ctx->fifo_idx, vp);
-	reg = avd->ctrl + avd->variant->vp_slot_offset + vp * 4;
+	memcpy_toio(avd->sram + submit_off, &submit, sizeof(submit));
+	writel(submit_off, avd->mbox + AVD_REG_MBOX1_SUBMIT);
 
-	/* the first segment is always the header (needs special handling) */
+	/* ???? */
+	usleep_range(1000, 1000);
 
-	writel(AVD_OP_EXEC | exec_mask | exec_rev_flag |
-		       AVD_OP_EXEC_FIFO_IDX(ctx->fifo_idx),
-	       reg);
-	seg = &sub->segments[idx++];
-	for (i = 0; i < seg->num; i++)
-		writel(seg->instructions[i], reg);
-	for (; idx <= sub->num; idx++) {
-		seg = &sub->segments[idx];
-		for (i = 0; i < seg->num; i++)
-			writel(seg->instructions[i], reg);
-		if (avd_wait_submission_queue(ctx, vp))
-			break;
-		writel(AVD_OP_EXEC | exec_mask |
-			       AVD_OP_EXEC_FLAG_END(idx == sub->num),
-		       reg);
-	}
-
-	kfree(sub->segments);
-	sub->segments = NULL;
 	return 0;
+}
+
+static int avd_boot(struct avd_dev *avd)
+{
+	u32 val;
+	int ret;
+	char version[64];
+
+	if (avd->variant->revision != 3)
+		dev_info_once(avd->dev, "booting hw version: %04x",
+			      readl_relaxed(avd->ctrl));
+
+	writel(avd->sram_start, avd->piodma + 0x24);
+	dev_info_once(avd->dev, "piodma version: %04x base: %08x",
+		      readl_relaxed(avd->piodma + 0xb4),
+		      readl_relaxed(avd->piodma + 0x24));
+
+	memcpy_toio(avd->code, avd->fw->data, avd->fw->size);
+
+	writel_relaxed(AVD_MBOX_ENABLE, avd->mbox + AVD_REG_MBOX1_STATUS);
+	writel_relaxed(AVD_MBOX_ENABLE, avd->mbox + AVD_REG_MBOX0_STATUS);
+	writel_relaxed(AVD_MBOX0_NOT_EMPTY,
+		       avd->mbox + AVD_REG_MBOX_IRQ_ENABLE);
+	writel_relaxed(AVD_RUN_CTRL_UNK_RUN, avd->mbox + AVD_REG_RUN_CTRL);
+
+	/* wait for cm3 to boot */
+	ret = readl_poll_timeout(avd->mbox + AVD_REG_FLAG0_SET, val, val == 1,
+				 10, 10000);
+	if (ret)
+		return ret;
+
+	memcpy_fromio(version, avd->sram, sizeof(version));
+	dev_info_once(avd->dev, "fw version: %s\n", version);
+
+	return 0;
+}
+
+static void avd_shutdown(struct avd_dev *avd)
+{
+	writel_relaxed(AVD_RUN_CTRL_UNK_STOP, avd->mbox + AVD_REG_RUN_CTRL);
+	writel_relaxed(1, avd->mbox + AVD_REG_FLAG0_CLR);
+	writel_relaxed(0, avd->mbox + AVD_REG_MBOX_IRQ_ENABLE);
 }
 
 static int avd_reset(struct avd_dev *avd)
@@ -257,12 +287,8 @@ static irqreturn_t avd_irq_handler(int irq, void *data)
 	enum vb2_buffer_state state;
 	u32 status;
 
-	if (!ctx)
-		return IRQ_HANDLED;
-
-	status = readl(avd->mbox + AVD_REG_MBOX1_RETRIEVE);
-
-	writel(AVD_MBOX1_NOT_EMPTY, avd->mbox + AVD_REG_MBOX_IRQ_CLR);
+	status = readl(avd->mbox + AVD_REG_MBOX0_RETRIEVE);
+	writel(AVD_MBOX0_NOT_EMPTY, avd->mbox + AVD_REG_MBOX_IRQ_CLR);
 
 	if (status & 0x10000) { /* dbg */
 		dev_warn(avd->dev, "no handler for IRQ: %3d",
@@ -271,16 +297,13 @@ static irqreturn_t avd_irq_handler(int irq, void *data)
 		return IRQ_HANDLED;
 	}
 
+	if (!ctx)
+		return IRQ_HANDLED;
+
 	if (status & 0x1000) {
-		/* pp is done ! we are done */
 		state = VB2_BUF_STATE_DONE;
-	} else if (status & 0x100) {
-		/* a vp is done, kick the pp and hope for the best */
-		if (ctx->coded_fmt_desc->ops->submit)
-			ctx->coded_fmt_desc->ops->submit(ctx);
-		goto done;
 	} else {
-		dev_err(avd->dev, "H%d error", status);
+		dev_err(avd->dev, "error: fw says: %x", status);
 		/* let watchdog handle */
 		goto done;
 	}
@@ -413,6 +436,7 @@ static int avd_release(struct file *filp)
 	v4l2_fh_exit(&ctx->fh);
 	avd_buf_free(ctx->dev, &ctx->inst);
 	avd_buf_free(ctx->dev, &ctx->pipe_state);
+	avd_buf_free(ctx->dev, &ctx->job.buf);
 	kfree(ctx);
 
 	return 0;
@@ -518,146 +542,65 @@ static void avd_v4l2_cleanup(struct avd_dev *avd)
 }
 
 static const struct avd_variant avd_t8103_variant = {
-	.vp_slots = {
-		[AVD_CODEC_HEVC] = 2, /* no sure */
-		[AVD_CODEC_H264] = 1,
-		[AVD_CODEC_VP9] = 1,
-	},
-	.fifo_slots = 7,
 	.capabilities = AVD_CAPABILITY_HEVC |
 			AVD_CAPABILITY_H264 |
 			AVD_CAPABILITY_VP9,
-	.configure_stream = t8103_configure_stream,
 	.fw_name = "apple/avd-fw-v2-t0.bin",
 	.revision = 3,
 	.quirks = AVD_QUIRK_LSR | AVD_QUIRK_NO_PIPE_STATE,
-	.vp_slot_offset = 0x4004,
-	.submit_offset = 0x4014,
-	.submit_queue_max_offset = 0x4018,
-	.submit_queue_status_offset = 0x402c, /* (vp slots + 1) * 4 */
 };
 
 static const struct avd_variant avd_t6000_variant = {
-	.vp_slots = {
-		[AVD_CODEC_HEVC] = 4,
-		[AVD_CODEC_H264] = 4,
-		[AVD_CODEC_VP9] = 1,
-	},
-	.fifo_slots = 15,
 	.capabilities = AVD_CAPABILITY_HEVC |
 			AVD_CAPABILITY_H264 |
 			AVD_CAPABILITY_VP9,
-	.configure_stream = t8112_configure_stream,
 	.fw_name = "apple/avd-fw-v3-t0.bin",
 	.revision = 4,
 	.quirks = AVD_QUIRK_LSR | AVD_QUIRK_NO_PIPE_STATE,
-	.vp_slot_offset = 0xc,
-	.submit_offset = 0x30,
-	.submit_queue_max_offset = 0x34,
-	.submit_queue_status_offset = 0x5c,
 };
 
 static const struct avd_variant avd_t8112_variant = {
-	.vp_slots = {
-		[AVD_CODEC_HEVC] = 4,
-		[AVD_CODEC_H264] = 4,
-		[AVD_CODEC_VP9] = 1,
-	},
-	.fifo_slots = 15,
 	.capabilities = AVD_CAPABILITY_HEVC |
 			AVD_CAPABILITY_H264 |
 			AVD_CAPABILITY_VP9,
-	.configure_stream = t8112_configure_stream,
 	.fw_name = "apple/avd-fw-v3-t1.bin",
 	.revision = 4,
 	.quirks = AVD_QUIRK_LSR,
-	.vp_slot_offset = 0xc,
-	.submit_offset = 0x30,
-	.submit_queue_max_offset = 0x34,
-	.submit_queue_status_offset = 0x5c,
 };
 
 static const struct avd_variant avd_t6020_variant = {
-	.vp_slots = {
-		[AVD_CODEC_HEVC] = 4,
-		[AVD_CODEC_H264] = 4,
-		[AVD_CODEC_VP9] = 1,
-	},
-	.fifo_slots = 15,
 	.capabilities = AVD_CAPABILITY_HEVC |
 			AVD_CAPABILITY_H264 |
 			AVD_CAPABILITY_VP9,
-	.configure_stream = t8112_configure_stream,
 	.fw_name = "apple/avd-fw-v3-t2.bin",
 	.revision = 4,
-	.vp_slot_offset = 0xc,
-	.submit_offset = 0x30,
-	.submit_queue_max_offset = 0x34,
-	.submit_queue_status_offset = 0x5c,
 };
 
 static const struct avd_variant avd_t8122_variant = {
-	.vp_slots = {
-		[AVD_CODEC_HEVC] = 4,
-		[AVD_CODEC_H264] = 4,
-		[AVD_CODEC_VP9] = 1,
-		[AVD_CODEC_AV1] = 2,
-	},
-	.fifo_slots = 15,
-	.configure_stream = t8122_configure_stream,
 	.capabilities = AVD_CAPABILITY_HEVC |
 			AVD_CAPABILITY_H264 |
 			AVD_CAPABILITY_VP9 |
 			AVD_CAPABILITY_AV1,
 	.fw_name = "apple/avd-fw-v4-t0.bin",
 	.revision = 4,
-	.vp_slot_offset = 0xc,
-	.submit_offset = 0x40,
-	.submit_queue_max_offset = 0x44,
-	.submit_queue_status_offset = 0x7c,
 };
 
 static const struct avd_variant avd_t8140_variant = {
-	/* This is filled in using the tunables, what vp/pp to use? */
-	.vp_slots = {
-		[AVD_CODEC_HEVC] = 2,
-		[AVD_CODEC_H264] = 1,
-		[AVD_CODEC_VP9] = 1,
-		[AVD_CODEC_AV1] = 1,
-	},
-	.fifo_slots = 7,
-	.configure_stream = t8122_configure_stream,
 	.capabilities = AVD_CAPABILITY_HEVC |
 			AVD_CAPABILITY_H264 |
 			AVD_CAPABILITY_VP9 |
 			AVD_CAPABILITY_AV1,
 	.fw_name = "apple/avd-fw-v5-t0.bin",
 	.revision = 4,
-	.vp_slot_offset = 0xc,
-	.submit_offset = 0x40,
-	.submit_queue_max_offset = 0x44,
-	.submit_queue_status_offset = 0x7c,
 };
 
 static const struct avd_variant avd_t8132_variant = {
-	.vp_slots = {
-		[AVD_CODEC_HEVC] = 4,
-		[AVD_CODEC_H264] = 4,
-		[AVD_CODEC_VP9] = 1,
-		[AVD_CODEC_AV1] = 3,
-	},
-	.fifo_slots = 15,
-	.configure_stream = t8122_configure_stream,
 	.capabilities = AVD_CAPABILITY_HEVC |
 			AVD_CAPABILITY_H264 |
 			AVD_CAPABILITY_VP9 |
 			AVD_CAPABILITY_AV1,
 	.fw_name = "apple/avd-fw-v5-t1.bin",
 	.revision = 4,
-	.vp_slot_offset = 0xc,
-	.submit_offset = 0x40,
-	.submit_queue_max_offset = 0x44,
-	.submit_queue_status_offset = 0x7c,
 };
 
 /* can also be derived from a version register */
@@ -695,15 +638,24 @@ static int avd_probe(struct platform_device *pdev)
 
 	avd->rstc = devm_reset_control_get_exclusive(avd->dev, NULL);
 
+	avd->piodma = devm_platform_ioremap_resource_byname(pdev, "piodma");
+	if (IS_ERR(avd->piodma))
+		return PTR_ERR(avd->piodma);
 	avd->code = devm_platform_ioremap_resource_byname(pdev, "code");
 	if (IS_ERR(avd->code))
 		return PTR_ERR(avd->code);
+	avd->sram = devm_platform_ioremap_resource_byname(pdev, "sram");
+	if (IS_ERR(avd->sram))
+		return PTR_ERR(avd->sram);
 	avd->mbox = devm_platform_ioremap_resource_byname(pdev, "mbox");
 	if (IS_ERR(avd->mbox))
 		return PTR_ERR(avd->mbox);
 	avd->ctrl = devm_platform_ioremap_resource_byname(pdev, "ctrl");
 	if (IS_ERR(avd->ctrl))
 		return PTR_ERR(avd->ctrl);
+
+	avd->sram_start = platform_get_resource_byname(pdev, IORESOURCE_MEM,
+						       "sram")->start >> 4;
 
 	avd->domain = iommu_get_domain_for_dev(avd->dev);
 	if (avd->domain) {
@@ -729,14 +681,14 @@ static int avd_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	irq = platform_get_irq(pdev, 1);
+	irq = platform_get_irq(pdev, 0);
 	if (irq < 0)
 		return irq;
 	ret = devm_request_threaded_irq(&pdev->dev, irq, NULL, avd_irq_handler,
 					IRQF_ONESHOT, dev_name(&pdev->dev),
 					avd);
 	if (ret) {
-		dev_err(avd->dev, "Could not request IRQ 1");
+		dev_err(avd->dev, "Could not request IRQ 0");
 		return ret;
 	}
 

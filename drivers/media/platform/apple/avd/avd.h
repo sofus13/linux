@@ -40,15 +40,22 @@
 
 #define AVD_REG_MBOX_IRQ_ENABLE	0x48
 #define AVD_REG_MBOX_IRQ_CLR	0x4c
-#define AVD_MBOX1_EMPTY		BIT(2)
-#define AVD_MBOX1_NOT_EMPTY	BIT(3)
+#define AVD_MBOX0_EMPTY		BIT(0)
+#define AVD_MBOX0_NOT_EMPTY	BIT(1)
 
+#define AVD_REG_MBOX0_STATUS	0x50
+#define AVD_REG_MBOX0_RETRIEVE	0x58
 #define AVD_REG_MBOX1_STATUS	0x5c
-#define AVD_REG_MBOX1_RETRIEVE	0x64
+#define AVD_REG_MBOX1_SUBMIT	0x60
 #define AVD_MBOX_ENABLE		BIT(0)
 
 #define AVD_REG_FLAG0_SET	0x90
 #define AVD_REG_FLAG0_CLR	0x98
+
+/* size in number of words (u32) minus one */
+#define AVD_PIODMA_CMD_SIZE(v)	FIELD_PREP(GENMASK(31, 18), v)
+#define AVD_PIODMA_CMD_DEST(v)	(GENMASK(17, 2) & (v))
+#define AVD_PIODMA_CMD_CONST	BIT(0)
 
 /*
  * AVD needs most addresses to be aligned to 256
@@ -145,7 +152,6 @@ struct avd_decoded_buffer *avd_get_ref_buf(struct avd_ctx *ctx,
 struct avd_coded_fmt_ops {
 	void (*adjust_decoded_fmt)(struct avd_ctx *ctx,
 				   struct v4l2_pix_format_mplane *pix_mp);
-	void (*submit)(struct avd_ctx *ctx);
 	int (*start)(struct avd_ctx *ctx);
 	void (*stop)(struct avd_ctx *ctx);
 	int (*run)(struct avd_ctx *ctx);
@@ -180,18 +186,9 @@ struct avd_coded_fmt_desc {
 };
 
 struct avd_variant {
-	unsigned int vp_slots[4];
-	unsigned int fifo_slots;
 	unsigned int capabilities;
-	void (*configure_stream)(struct avd_dev *avd, dma_addr_t addr,
-				 u8 fifo_idx, u32 vp_slot);
 	const char *fw_name;
 	unsigned char revision; /* the same as the device tree */
-	/* just for convenience */
-	u32 vp_slot_offset;
-	u32 submit_offset;
-	u32 submit_queue_max_offset;
-	u32 submit_queue_status_offset;
 	unsigned int quirks;
 };
 
@@ -203,9 +200,12 @@ struct avd_dev {
 	struct v4l2_m2m_dev *m2m_dev;
 	struct platform_device *pdev;
 	const struct firmware *fw; /* fw is lost on suspend */
+	void __iomem *piodma;
 	void __iomem *code;
+	void __iomem *sram;
 	void __iomem *mbox;
 	void __iomem *ctrl;
+	u32 sram_start;
 	struct iommu_domain *domain;
 	struct iommu_domain *empty_domain;
 	struct mutex vdev_lock; /* serializes ioctls */
@@ -214,20 +214,25 @@ struct avd_dev {
 };
 
 struct avd_segment {
-	size_t num;
+	u32 piodma_cmd;
+	u32 num;
 	u32 instructions[AVD_MAX_INST];
-};
-
-struct avd_job {
-	enum avd_codec codec;
-	size_t num;
-	struct avd_segment *segments;
 };
 
 struct avd_buf {
 	void *cpu;
 	dma_addr_t addr;
 	size_t size;
+};
+
+struct avd_job {
+	enum avd_codec codec;
+	int dest;
+	size_t num;
+	size_t num_alloc;
+	size_t num_submit;
+	struct avd_segment *segments;
+	struct avd_buf buf;
 };
 
 struct avd_ctx {
@@ -242,12 +247,12 @@ struct avd_ctx {
 	struct delayed_work watchdog_work;
 	void *priv;
 	struct avd_comp comp;
-	int fifo_idx;
 	struct avd_job job;
 	struct avd_buf inst;
 	struct avd_buf pipe_state;
 };
 
+int avd_end_segment(struct avd_ctx *ctx, bool update_submit);
 int avd_init_job(struct avd_ctx *ctx, enum avd_codec codec, size_t segments);
 int avd_submit_job(struct avd_ctx *ctx);
 
@@ -290,16 +295,5 @@ static inline struct avd_ctx *file_to_ctx(struct file *filp)
 {
 	return container_of(file_to_v4l2_fh(filp), struct avd_ctx, fh);
 }
-
-/* hw stuff */
-int avd_boot(struct avd_dev *avd);
-void avd_shutdown(struct avd_dev *avd);
-
-void t8103_configure_stream(struct avd_dev *avd, dma_addr_t addr, u8 fifo_idx,
-			    u32 vp_slot);
-void t8112_configure_stream(struct avd_dev *avd, dma_addr_t addr, u8 fifo_idx,
-			    u32 vp_slot);
-void t8122_configure_stream(struct avd_dev *avd, dma_addr_t addr, u8 fifo_idx,
-			    u32 vp_slot);
 
 #endif /* AVD_H_ */

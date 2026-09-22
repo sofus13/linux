@@ -673,8 +673,11 @@ static void avd_h264_run_preamble(struct avd_ctx *ctx, struct avd_h264_run *run)
 static int avd_h264_realloc_slices(struct avd_ctx *ctx)
 {
 	struct avd_h264_ctx *h264_ctx = ctx->priv;
-	void *tmp;
+	struct avd_job *job = &ctx->job;
+	struct avd_buf tmp_buf = {};
 	size_t alloc_slice_num;
+	void *tmp;
+	int ret;
 
 	tmp = h264_ctx->slices;
 	alloc_slice_num = (h264_ctx->alloc_slice_num * 3) / 2;
@@ -691,18 +694,23 @@ static int avd_h264_realloc_slices(struct avd_ctx *ctx)
 	       sizeof(*h264_ctx->slices) * h264_ctx->slice_num);
 	kfree(tmp);
 
-	tmp = ctx->job.segments;
-	ctx->job.segments = kzalloc_objs(*ctx->job.segments,
-					 (alloc_slice_num + 1), GFP_KERNEL);
-	if (!ctx->job.segments) {
-		ctx->job.segments = tmp;
+	/* we could already have the correct size */
+	if ((alloc_slice_num + 1) * sizeof(*job->segments) < job->buf.size)
+		return 0;
+
+	ret = avd_buf_alloc(ctx->dev, &tmp_buf,
+			   (alloc_slice_num + 1) * sizeof(*job->segments));
+	if (ret)
 		return -ENOMEM;
-	}
 
-	memcpy(ctx->job.segments, tmp,
-	       sizeof(*ctx->job.segments) * (ctx->job.num + 1));
-	kfree(tmp);
+	job->segments = tmp_buf.cpu;
+	job->num_alloc = (alloc_slice_num + 1);
+	memset(tmp_buf.cpu, 0, tmp_buf.size);
+	memcpy(job->segments, job->buf.cpu,
+	       sizeof(*job->segments) * (job->num + 1));
 
+	avd_buf_free(ctx->dev, &job->buf);
+	memcpy(&job->buf, &tmp_buf, sizeof(tmp_buf));
 	return 0;
 }
 
@@ -720,7 +728,7 @@ static int avd_h264_run(struct avd_ctx *ctx)
 	    h264_ctx->slice_num >= h264_ctx->alloc_slice_num) {
 		ret = avd_h264_realloc_slices(ctx);
 		if (ret)
-			goto err_free_jobs;
+			goto err_ret;
 	}
 
 	src = v4l2_m2m_next_src_buf(ctx->fh.m2m_ctx);
@@ -728,7 +736,7 @@ static int avd_h264_run(struct avd_ctx *ctx)
 	ret = avd_buf_alloc(ctx->dev, h264_ctx->active_slice,
 			    vb2_get_plane_payload(&src->vb2_buf, 0));
 	if (ret)
-		goto err_free_jobs;
+		goto err_ret;
 	memcpy(h264_ctx->active_slice->cpu, vb2_plane_vaddr(&src->vb2_buf, 0),
 	       h264_ctx->active_slice->size);
 	h264_ctx->slice_num++;
@@ -752,13 +760,15 @@ static int avd_h264_run(struct avd_ctx *ctx)
 		if (ret)
 			return ret;
 		stream_hdr(ctx, &run);
+		/* h264 only submits once */
+		avd_end_segment(ctx, true);
 	}
 
 	if (!ctx->job.segments)
 		return -EINVAL;
 
-	ctx->job.num++;
 	stream_slice(ctx, &run);
+	avd_end_segment(ctx, false);
 
 	if (run.base.bufs.src->flags & V4L2_BUF_FLAG_M2M_HOLD_CAPTURE_BUF) {
 		avd_job_finish(ctx, VB2_BUF_STATE_DONE);
@@ -767,8 +777,7 @@ static int avd_h264_run(struct avd_ctx *ctx)
 
 	return avd_submit_job(ctx);
 
-err_free_jobs:
-	kfree(ctx->job.segments);
+err_ret:
 	return ret;
 }
 
@@ -827,25 +836,12 @@ static int avd_h264_try_ctrl(struct avd_ctx *ctx, struct v4l2_ctrl *ctrl)
 	return 0;
 }
 
-static void avd_h264_submit(struct avd_ctx *ctx)
-{
-	writel_relaxed(AVD_OP_EXEC |
-			AVD_OP_EXEC_FLAG_START_REV4(
-				ctx->dev->variant->revision == 4) |
-			AVD_OP_EXEC_FLAG_START_REV3(
-				ctx->dev->variant->revision == 3) |
-			AVD_OP_EXEC_FIFO_IDX(ctx->fifo_idx) |
-			AVD_OP_EXEC_FIFO_MASK(ctx->dev->variant->fifo_slots),
-		ctx->dev->ctrl + ctx->dev->variant->submit_offset);
-}
-
 const struct avd_coded_fmt_ops avd_h264_fmt_ops = {
 	.adjust_decoded_fmt = avd_h264_adjust_decoded_fmt,
 	.start = avd_h264_start,
 	.stop = avd_h264_stop,
 	.done = avd_h264_done,
 	.run = avd_h264_run,
-	.submit = avd_h264_submit,
 	.try_ctrl = avd_h264_try_ctrl,
 	.get_image_fmt = avd_h264_get_image_fmt,
 };
