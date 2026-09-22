@@ -588,7 +588,7 @@ static const struct avd_variant avd_t6020_variant = {
 			AVD_CAPABILITY_H264 |
 			AVD_CAPABILITY_VP9,
 	.configure_stream = t8112_configure_stream,
-	.fw_name = "apple/avd-fw-v3-t1.bin",
+	.fw_name = "apple/avd-fw-v3-t2.bin",
 	.revision = 4,
 	.vp_slot_offset = 0xc,
 	.submit_offset = 0x30,
@@ -812,6 +812,7 @@ MODULE_DESCRIPTION("Apple Video Decoder driver");
 MODULE_FIRMWARE("apple/avd-fw-v2-t0.bin");
 MODULE_FIRMWARE("apple/avd-fw-v3-t0.bin");
 MODULE_FIRMWARE("apple/avd-fw-v3-t1.bin");
+MODULE_FIRMWARE("apple/avd-fw-v3-t2.bin");
 MODULE_FIRMWARE("apple/avd-fw-v4-t0.bin");
 MODULE_FIRMWARE("apple/avd-fw-v5-t0.bin");
 MODULE_FIRMWARE("apple/avd-fw-v5-t1.bin");
