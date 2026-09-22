@@ -987,19 +987,20 @@
 				     <AIC_IRQ 307 IRQ_TYPE_LEVEL_HIGH>;
 		};
 
-		avd: avd@269080000 {
+		avd: avd@269070000 {
 			compatible = "apple,t8112-avd";
-			reg = <0x2 0x69080000 0x0 0x10000>,
+			reg = <0x2 0x69070000 0x0 0x4000>,
+			      <0x2 0x69080000 0x0 0x10000>,
 			      <0x2 0x69090000 0x0 0x10000>,
 			      <0x2 0x690a0000 0x0 0x4000>,
 			      <0x2 0x69100000 0x0 0x10000>;
-			reg-names = "code", "sram", "mbox", "ctrl";
+			reg-names = "piodma", "code", "sram", "mbox", "ctrl";
 			interrupt-parent = <&aic>;
 			interrupts = <AIC_IRQ 667 IRQ_TYPE_LEVEL_HIGH>,
 				     <AIC_IRQ 668 IRQ_TYPE_LEVEL_HIGH>;
 			power-domains = <&ps_avd_sys>;
 			resets = <&ps_avd_sys>;
-			iommus = <&avd_dart 0>;
+			iommus = <&avd_dart 0>, <&avd_dart 1>;
 		};
 
 		avd_dart: iommu@269010000 {
