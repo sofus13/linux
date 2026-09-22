@@ -343,6 +343,16 @@
 #undef DIE
 #undef DIE_NO
 
+&avd {
+	iommus = <&avd_dart 0>, <&avd_dart 1>,
+		 <&avd_dart_die1 0>, <&avd_dart_die1 1>;
+};
+
+&avd_die1 {
+	iommus = <&avd_dart 0>, <&avd_dart 1>,
+		 <&avd_dart_die1 0>, <&avd_dart_die1 1>;
+};
+
 /* delete non-present DISP power-states */
 /delete-node/ &ps_disp_cpu;
 /delete-node/ &ps_disp_cpu_die1;
