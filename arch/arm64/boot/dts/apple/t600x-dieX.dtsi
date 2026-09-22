@@ -24,19 +24,20 @@
 		#performance-domain-cells = <0>;
 	};
 
-	DIE_NODE(avd): avd@287080000 {
+	DIE_NODE(avd): avd@287070000 {
 		compatible = "apple,t6000-avd";
-		reg = <0x2 0x87080000 0x0 0x10000>,
+		reg = <0x2 0x87070000 0x0 0x4000>,
+		      <0x2 0x87080000 0x0 0x10000>,
 		      <0x2 0x87090000 0x0 0x10000>,
 		      <0x2 0x870a0000 0x0 0x4000>,
 		      <0x2 0x87100000 0x0 0x10000>;
-		reg-names = "code", "sram", "mbox", "ctrl";
+		reg-names = "piodma", "code", "sram", "mbox", "ctrl";
 		interrupt-parent = <&aic>;
 		interrupts = <AIC_IRQ DIE_NO 1011 IRQ_TYPE_LEVEL_HIGH>,
 			     <AIC_IRQ DIE_NO 1012 IRQ_TYPE_LEVEL_HIGH>;
 		power-domains = <&DIE_NODE(ps_avd_sys)>;
 		resets = <&DIE_NODE(ps_avd_sys)>;
-		iommus = <&DIE_NODE(avd_dart) 0>;
+		iommus = <&DIE_NODE(avd_dart) 0>, <&DIE_NODE(avd_dart) 1>;
 	};
 
 	DIE_NODE(avd_dart): iommu@287010000 {
