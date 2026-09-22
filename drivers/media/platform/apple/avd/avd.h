@@ -192,25 +192,36 @@ struct avd_variant {
 	unsigned int quirks;
 };
 
-struct avd_dev {
+struct avd_core {
 	struct device *dev;
-	struct v4l2_device v4l2_dev;
-	struct media_device mdev;
-	struct video_device vdev;
-	struct v4l2_m2m_dev *m2m_dev;
-	struct platform_device *pdev;
-	const struct firmware *fw; /* fw is lost on suspend */
+	struct avd_dev *avd;
 	void __iomem *piodma;
 	void __iomem *code;
 	void __iomem *sram;
 	void __iomem *mbox;
 	void __iomem *ctrl;
 	u32 sram_start;
-	struct iommu_domain *domain;
 	struct iommu_domain *empty_domain;
-	struct mutex vdev_lock; /* serializes ioctls */
 	struct reset_control *rstc;
+	struct avd_ctx *curr_ctx;
+	int id;
+};
+
+struct avd_dev {
+	struct v4l2_device v4l2_dev;
+	struct media_device mdev;
+	struct video_device vdev;
+	struct v4l2_m2m_dev *m2m_dev;
+	const struct firmware *fw; /* fw is lost on suspend */
+	struct mutex vdev_lock; /* serializes ioctls */
 	const struct avd_variant *variant;
+	struct avd_core **cores;
+	int core_count;
+	struct avd_core **available_cores;
+	unsigned int available_core_count;
+	spinlock_t cores_lock; /* serializes core list access */
+	struct avd_core *main_core;
+	struct iommu_domain *domain;
 };
 
 struct avd_segment {
@@ -250,7 +261,11 @@ struct avd_ctx {
 	struct avd_job job;
 	struct avd_buf inst;
 	struct avd_buf pipe_state;
+	struct avd_core *core;
 };
+
+struct avd_core *acquire_core(struct avd_dev *avd, struct avd_ctx *ctx);
+void release_core(struct avd_dev *avd, struct avd_core *core);
 
 int avd_end_segment(struct avd_ctx *ctx, bool update_submit);
 int avd_init_job(struct avd_ctx *ctx, enum avd_codec codec, size_t segments);

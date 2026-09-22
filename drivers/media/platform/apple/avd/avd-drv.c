@@ -12,12 +12,14 @@
  * Copyright (C) 2011 Samsung Electronics Co., Ltd.
  */
 
+#include <linux/component.h>
 #include <linux/pm_runtime.h>
 #include <linux/iommu.h>
 #include <linux/reset.h>
 #include <linux/delay.h>
 #include <linux/dev_printk.h>
 #include <linux/iopoll.h>
+#include <linux/of_platform.h>
 
 #include <media/videobuf2-dma-contig.h>
 #include <media/videobuf2-v4l2.h>
@@ -94,14 +96,14 @@ int avd_buf_alloc(struct avd_dev *avd, struct avd_buf *buf, size_t size)
 
 	buf->size = size;
 	buf->cpu =
-		dma_alloc_coherent(avd->dev, buf->size, &buf->addr, GFP_KERNEL);
+		dma_alloc_coherent(avd->main_core->dev, buf->size, &buf->addr, GFP_KERNEL);
 	return buf->cpu ? 0 : -ENOMEM;
 }
 
 void avd_buf_free(struct avd_dev *avd, struct avd_buf *buf)
 {
 	if (buf->cpu)
-		dma_free_coherent(avd->dev, buf->size, buf->cpu, buf->addr);
+		dma_free_coherent(avd->main_core->dev, buf->size, buf->cpu, buf->addr);
 	memset(buf, 0, sizeof(*buf));
 }
 
@@ -167,7 +169,7 @@ struct avd_cm3_job {
 
 int avd_submit_job(struct avd_ctx *ctx)
 {
-	struct avd_dev *avd = ctx->dev;
+	struct avd_core *core = ctx->core;
 	struct avd_job *job = &ctx->job;
 	int submit_off = 0x100;
 	struct avd_cm3_job submit = (struct avd_cm3_job) {
@@ -180,8 +182,8 @@ int avd_submit_job(struct avd_ctx *ctx)
 	};
 
 	schedule_delayed_work(&ctx->watchdog_work, msecs_to_jiffies(2000));
-	memcpy_toio(avd->sram + submit_off, &submit, sizeof(submit));
-	writel(submit_off, avd->mbox + AVD_REG_MBOX1_SUBMIT);
+	memcpy_toio(core->sram + submit_off, &submit, sizeof(submit));
+	writel(submit_off, core->mbox + AVD_REG_MBOX1_SUBMIT);
 
 	/* ???? */
 	usleep_range(1000, 1000);
@@ -189,77 +191,93 @@ int avd_submit_job(struct avd_ctx *ctx)
 	return 0;
 }
 
-static int avd_boot(struct avd_dev *avd)
+static int avd_core_boot(struct avd_core *core)
 {
+	struct avd_dev *avd = core->avd;
 	u32 val;
 	int ret;
 	char version[64];
 
 	if (avd->variant->revision != 3)
-		dev_info_once(avd->dev, "booting hw version: %04x",
-			      readl_relaxed(avd->ctrl));
+		dev_info_once(core->dev, "booting hw version: %04x",
+			      readl_relaxed(core->ctrl));
 
-	writel(avd->sram_start, avd->piodma + 0x24);
-	dev_info_once(avd->dev, "piodma version: %04x base: %08x",
-		      readl_relaxed(avd->piodma + 0xb4),
-		      readl_relaxed(avd->piodma + 0x24));
+	writel(core->sram_start, core->piodma + 0x24);
+	dev_info_once(core->dev, "piodma version: %04x base: %08x",
+		      readl_relaxed(core->piodma + 0xb4),
+		      readl_relaxed(core->piodma + 0x24));
 
-	memcpy_toio(avd->code, avd->fw->data, avd->fw->size);
+	memcpy_toio(core->code, avd->fw->data, avd->fw->size);
 
-	writel_relaxed(AVD_MBOX_ENABLE, avd->mbox + AVD_REG_MBOX1_STATUS);
-	writel_relaxed(AVD_MBOX_ENABLE, avd->mbox + AVD_REG_MBOX0_STATUS);
+	writel_relaxed(AVD_MBOX_ENABLE, core->mbox + AVD_REG_MBOX1_STATUS);
+	writel_relaxed(AVD_MBOX_ENABLE, core->mbox + AVD_REG_MBOX0_STATUS);
 	writel_relaxed(AVD_MBOX0_NOT_EMPTY,
-		       avd->mbox + AVD_REG_MBOX_IRQ_ENABLE);
-	writel_relaxed(AVD_RUN_CTRL_UNK_RUN, avd->mbox + AVD_REG_RUN_CTRL);
+		       core->mbox + AVD_REG_MBOX_IRQ_ENABLE);
+	writel_relaxed(AVD_RUN_CTRL_UNK_RUN, core->mbox + AVD_REG_RUN_CTRL);
 
 	/* wait for cm3 to boot */
-	ret = readl_poll_timeout(avd->mbox + AVD_REG_FLAG0_SET, val, val == 1,
+	ret = readl_poll_timeout(core->mbox + AVD_REG_FLAG0_SET, val, val == 1,
 				 10, 10000);
 	if (ret)
 		return ret;
 
-	memcpy_fromio(version, avd->sram, sizeof(version));
-	dev_info_once(avd->dev, "fw version: %s\n", version);
+	memcpy_fromio(version, core->sram, sizeof(version));
+	dev_info_once(core->dev, "fw version: %s\n", version);
 
 	return 0;
 }
 
-static void avd_shutdown(struct avd_dev *avd)
+static void avd_core_shutdown(struct avd_core *core)
 {
-	writel_relaxed(AVD_RUN_CTRL_UNK_STOP, avd->mbox + AVD_REG_RUN_CTRL);
-	writel_relaxed(1, avd->mbox + AVD_REG_FLAG0_CLR);
-	writel_relaxed(0, avd->mbox + AVD_REG_MBOX_IRQ_ENABLE);
+	writel_relaxed(AVD_RUN_CTRL_UNK_STOP, core->mbox + AVD_REG_RUN_CTRL);
+	writel_relaxed(1, core->mbox + AVD_REG_FLAG0_CLR);
+	writel_relaxed(0, core->mbox + AVD_REG_MBOX_IRQ_ENABLE);
 }
 
-static int avd_reset(struct avd_dev *avd)
+static int avd_core_reset(struct avd_core *core)
 {
 	int ret = 0;
 
-	ret = pm_runtime_resume_and_get(avd->dev);
+	ret = pm_runtime_resume_and_get(core->dev);
 	if (ret < 0)
 		return ret;
 
-	ret = reset_control_reset(avd->rstc);
+	ret = reset_control_reset(core->rstc);
 	if (ret)
-		dev_err(avd->dev, "reset: failed: %d", ret);
+		dev_err(core->dev, "reset: failed: %d", ret);
 
-	if (avd->empty_domain) {
-		iommu_attach_device(avd->empty_domain, avd->dev);
-		iommu_detach_device(avd->empty_domain, avd->dev);
+	if (core->empty_domain) {
+		/*
+		 * this differs from rkvdec in both that we dont do it from an
+		 * interrupt handler and that we control when the reset
+		 * happens.
+		 *
+		 * There is still a possibility that the hw can be reset
+		 * without going through the pm-domain, although i dont expect
+		 * it
+		 */
+		iommu_detach_device(core->curr_ctx->dev->domain, core->dev);
+		ret = iommu_attach_device(core->empty_domain, core->dev);
+		if (ret)
+			dev_warn(core->dev, "Cannot attach empty domain: %d\n", ret);
+		iommu_detach_device(core->empty_domain, core->dev);
+		ret = iommu_attach_device(core->curr_ctx->dev->domain, core->dev);
+		if (ret)
+			dev_warn(core->dev, "Cannot attach global domain: %d\n", ret);
 	}
 
-	ret = avd_boot(avd);
+	ret = avd_core_boot(core);
 	if (ret)
-		dev_err(avd->dev, "reset: failed to boot");
+		dev_err(core->dev, "reset: failed to boot core %d", core->id);
 
-	pm_runtime_put_autosuspend(avd->dev);
+	pm_runtime_put_autosuspend(core->dev);
 
 	return ret;
 }
 
 static void avd_watchdog_func(struct work_struct *work)
 {
-	struct avd_dev *avd;
+	struct avd_core *core;
 	struct avd_ctx *ctx;
 	int ret;
 
@@ -268,32 +286,33 @@ static void avd_watchdog_func(struct work_struct *work)
 	if (!ctx)
 		return;
 
-	avd = ctx->dev;
+	core = ctx->core;
 
-	dev_err(avd->dev, "Frame processing timed out!");
+	dev_err(core->dev, "Frame processing timed out!");
 
-	writel(0, avd->mbox + AVD_REG_MBOX_IRQ_ENABLE);
-	ret = avd_reset(avd);
+	writel(0, core->mbox + AVD_REG_MBOX_IRQ_ENABLE);
+	ret = avd_core_reset(core);
 	if (ret)
-		dev_err(avd->dev, "failed to reset: %d", ret);
+		dev_err(core->dev, "failed to reset: %d", ret);
 
 	avd_job_finish(ctx, VB2_BUF_STATE_ERROR);
 }
 
 static irqreturn_t avd_irq_handler(int irq, void *data)
 {
-	struct avd_dev *avd = data;
-	struct avd_ctx *ctx = v4l2_m2m_get_curr_priv(avd->m2m_dev);
+	struct avd_core *core = data;
+	struct avd_ctx *ctx = core->curr_ctx;
 	enum vb2_buffer_state state;
 	u32 status;
 
-	status = readl(avd->mbox + AVD_REG_MBOX0_RETRIEVE);
-	writel(AVD_MBOX0_NOT_EMPTY, avd->mbox + AVD_REG_MBOX_IRQ_CLR);
+	status = readl(core->mbox + AVD_REG_MBOX0_RETRIEVE);
+	writel(AVD_MBOX0_NOT_EMPTY, core->mbox + AVD_REG_MBOX_IRQ_CLR);
 
+	/* TODO: we should be a bit smarter about this */
 	if (status & 0x10000) { /* dbg */
-		dev_warn(avd->dev, "no handler for IRQ: %3d",
+		dev_warn(core->dev, "no handler for IRQ: %3d",
 			 status & ~0x10000);
-		writel_relaxed(0, avd->mbox + AVD_REG_MBOX_IRQ_ENABLE);
+		writel_relaxed(0, core->mbox + AVD_REG_MBOX_IRQ_ENABLE);
 		return IRQ_HANDLED;
 	}
 
@@ -303,7 +322,7 @@ static irqreturn_t avd_irq_handler(int irq, void *data)
 	if (status & 0x1000) {
 		state = VB2_BUF_STATE_DONE;
 	} else {
-		dev_err(avd->dev, "error: fw says: %x", status);
+		dev_err(core->dev, "error: fw says: %x", status);
 		/* let watchdog handle */
 		goto done;
 	}
@@ -316,17 +335,51 @@ done:
 	return IRQ_HANDLED;
 }
 
+/**
+ * Return a core that is available for decoding or null if no core is found.
+ * The caller should make sure to call release_core() when the core is no longer needed.
+ */
+struct avd_core *acquire_core(struct avd_dev *avd, struct avd_ctx *ctx)
+{
+	struct avd_core *core = NULL;
+
+	guard(spinlock_irqsave)(&avd->cores_lock);
+
+	if (avd->available_core_count) {
+		core = avd->available_cores[--avd->available_core_count];
+
+		/* Set the current core's ctx to this ctx */
+		core->curr_ctx = ctx;
+	}
+
+	return core;
+}
+
+/**
+ * Release the core to make it available for a next job.
+ */
+void release_core(struct avd_dev *avd, struct avd_core *core)
+{
+	guard(spinlock_irqsave)(&avd->cores_lock);
+
+	core->curr_ctx = NULL;
+	avd->available_cores[avd->available_core_count++] = core;
+}
+
 static void avd_device_run(void *priv)
 {
 	struct avd_ctx *ctx = priv;
-	struct avd_dev *avd = ctx->dev;
 	const struct avd_coded_fmt_desc *desc = ctx->coded_fmt_desc;
 	int ret;
 
 	if (WARN_ON(!desc))
 		return;
 
-	ret = pm_runtime_resume_and_get(avd->dev);
+	ctx->core = acquire_core(ctx->dev, ctx);
+	if (WARN_ON(!ctx->core))
+		return;
+
+	ret = pm_runtime_resume_and_get(ctx->core->dev);
 	if (ret < 0) {
 		avd_job_finish_no_pm(ctx, VB2_BUF_STATE_ERROR);
 		return;
@@ -463,10 +516,11 @@ static const struct media_device_ops avd_media_ops = {
 static int avd_v4l2_init(struct avd_dev *avd)
 {
 	int ret;
+	struct device *dev = avd->main_core->dev;
 
-	ret = v4l2_device_register(avd->dev, &avd->v4l2_dev);
+	ret = v4l2_device_register(dev, &avd->v4l2_dev);
 	if (ret) {
-		dev_err(avd->dev, "Failed to register V4L2 device\n");
+		dev_err(dev, "Failed to register V4L2 device\n");
 		return ret;
 	}
 
@@ -477,7 +531,7 @@ static int avd_v4l2_init(struct avd_dev *avd)
 		goto err_unregister_v4l2;
 	}
 
-	avd->mdev.dev = avd->dev;
+	avd->mdev.dev = dev;
 	strscpy(avd->mdev.model, "avd", sizeof(avd->mdev.model));
 	strscpy(avd->mdev.bus_info, "platform:avd", sizeof(avd->mdev.bus_info));
 	media_device_init(&avd->mdev);
@@ -617,128 +671,169 @@ static const struct of_device_id avd_of_match[] = {
 
 MODULE_DEVICE_TABLE(of, avd_of_match);
 
-static int avd_probe(struct platform_device *pdev)
+static int avd_core_bind(struct device *dev, struct device *master, void *data)
 {
-	struct avd_dev *avd;
-	const struct of_device_id *match;
-	int ret, irq;
+	struct platform_device *pdev = to_platform_device(dev);
+	struct avd_core *core = platform_get_drvdata(pdev);
+	struct avd_dev *avd = data;
+	int id, ret;
 
-	avd = devm_kzalloc(&pdev->dev, sizeof(*avd), GFP_KERNEL);
-	if (!avd)
-		return -ENOMEM;
+	core->avd = avd;
+	id = avd->core_count;
+	core->id = id;
+	avd->cores[id] = core;
 
-	platform_set_drvdata(pdev, avd);
-	avd->dev = &pdev->dev;
-	avd->pdev = pdev;
+	if (id == 0)
+		avd->main_core = core;
 
-	mutex_init(&avd->vdev_lock);
+	if (iommu_get_domain_for_dev(dev)) {
+		if (!avd->domain) {
+			avd->domain = iommu_get_domain_for_dev(dev);
+			if (IS_ERR(avd->domain)) {
+				avd->domain = NULL;
+				dev_warn_once(dev, "cannot get global domain\n");
+			}
+		}
 
-	match = of_match_node(avd_of_match, pdev->dev.of_node);
-	avd->variant = match->data;
-
-	avd->rstc = devm_reset_control_get_exclusive(avd->dev, NULL);
-
-	avd->piodma = devm_platform_ioremap_resource_byname(pdev, "piodma");
-	if (IS_ERR(avd->piodma))
-		return PTR_ERR(avd->piodma);
-	avd->code = devm_platform_ioremap_resource_byname(pdev, "code");
-	if (IS_ERR(avd->code))
-		return PTR_ERR(avd->code);
-	avd->sram = devm_platform_ioremap_resource_byname(pdev, "sram");
-	if (IS_ERR(avd->sram))
-		return PTR_ERR(avd->sram);
-	avd->mbox = devm_platform_ioremap_resource_byname(pdev, "mbox");
-	if (IS_ERR(avd->mbox))
-		return PTR_ERR(avd->mbox);
-	avd->ctrl = devm_platform_ioremap_resource_byname(pdev, "ctrl");
-	if (IS_ERR(avd->ctrl))
-		return PTR_ERR(avd->ctrl);
-
-	avd->sram_start = platform_get_resource_byname(pdev, IORESOURCE_MEM,
-						       "sram")->start >> 4;
-
-	avd->domain = iommu_get_domain_for_dev(avd->dev);
-	if (avd->domain) {
-		avd->empty_domain = iommu_paging_domain_alloc(avd->dev);
-		if (IS_ERR(avd->empty_domain)) {
-			avd->empty_domain = NULL;
-			dev_warn(avd->dev, "cannot alloc new empty domain");
+		if (avd->domain) {
+			ret = iommu_attach_device(avd->domain, dev);
+			if (ret)
+				dev_warn(dev, "cannot attach global domain to core %d\n", id);
 		}
 	}
 
-	ret = request_firmware(&avd->fw, avd->variant->fw_name, avd->dev);
+	release_core(avd, core);
+	avd->core_count++;
 
-	if (ret) {
-		dev_err(avd->dev, "failed to load firmware: %d", ret);
-		return ret;
+	dev_info(dev, "Registered core %d\n", id);
+
+	return 0;
+}
+
+static const struct component_ops avd_core_ops = {
+	.bind = avd_core_bind,
+};
+
+static int avd_core_probe(struct platform_device *pdev)
+{
+	struct avd_core *core;
+	int ret, irq;
+
+	if (!pdev->dev.of_node)
+		return -ENODEV;
+
+	core = devm_kzalloc(&pdev->dev, sizeof(*core), GFP_KERNEL);
+	if (!core)
+		return -ENOMEM;
+
+	platform_set_drvdata(pdev, core);
+	core->dev = &pdev->dev;
+
+	core->rstc = devm_reset_control_get_exclusive(core->dev, NULL);
+
+	core->piodma = devm_platform_ioremap_resource_byname(pdev, "piodma");
+	if (IS_ERR(core->piodma))
+		return PTR_ERR(core->piodma);
+
+	core->code = devm_platform_ioremap_resource_byname(pdev, "code");
+	if (IS_ERR(core->code))
+		return PTR_ERR(core->code);
+
+	core->sram = devm_platform_ioremap_resource_byname(pdev, "sram");
+	if (IS_ERR(core->sram))
+		return PTR_ERR(core->sram);
+
+	core->mbox = devm_platform_ioremap_resource_byname(pdev, "mbox");
+	if (IS_ERR(core->mbox))
+		return PTR_ERR(core->mbox);
+
+	core->ctrl = devm_platform_ioremap_resource_byname(pdev, "ctrl");
+	if (IS_ERR(core->ctrl))
+		return PTR_ERR(core->ctrl);
+
+	core->sram_start = platform_get_resource_byname(pdev, IORESOURCE_MEM,
+						       "sram")->start >> 4;
+
+	if (iommu_get_domain_for_dev(core->dev)) {
+		core->empty_domain = iommu_paging_domain_alloc(core->dev);
+		if (IS_ERR(core->empty_domain)) {
+			core->empty_domain = NULL;
+			dev_warn(core->dev, "cannot alloc new empty domain");
+		}
 	}
 
-	ret = dma_set_mask_and_coherent(avd->dev,
-					DMA_BIT_MASK((avd->variant->quirks &
-						     AVD_QUIRK_LSR) ? 38 : 64));
+	/* does it matter? */
+	ret = dma_set_mask_and_coherent(core->dev, DMA_BIT_MASK(64));
 	if (ret) {
-		dev_err(avd->dev, "Failed to set DMA mask");
+		dev_err(core->dev, "Failed to set DMA mask");
 		return ret;
 	}
 
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0)
 		return irq;
+
 	ret = devm_request_threaded_irq(&pdev->dev, irq, NULL, avd_irq_handler,
 					IRQF_ONESHOT, dev_name(&pdev->dev),
-					avd);
+					core);
 	if (ret) {
-		dev_err(avd->dev, "Could not request IRQ 0");
+		dev_err(core->dev, "Could not request IRQ 0");
 		return ret;
 	}
 
-	pm_runtime_set_autosuspend_delay(avd->dev, 100);
-	pm_runtime_use_autosuspend(avd->dev);
-	pm_runtime_enable(avd->dev);
+	pm_runtime_set_autosuspend_delay(core->dev, 100);
+	pm_runtime_use_autosuspend(core->dev);
+	pm_runtime_enable(core->dev);
 
-	ret = avd_v4l2_init(avd);
-	if (ret)
+	platform_set_drvdata(pdev, core);
+
+	ret = component_add(&pdev->dev, &avd_core_ops);
+	if (ret < 0) {
+		dev_err(&pdev->dev, "failed to register component: %d\n", ret);
 		goto err_disable_runtime_pm;
+	}
 
 	return 0;
 
 err_disable_runtime_pm:
 	pm_runtime_dont_use_autosuspend(&pdev->dev);
 	pm_runtime_disable(&pdev->dev);
+	if (core->empty_domain)
+		iommu_domain_free(core->empty_domain);
+
 	return ret;
 }
 
-static void avd_remove(struct platform_device *pdev)
+static void avd_core_remove(struct platform_device *pdev)
 {
-	struct avd_dev *avd = platform_get_drvdata(pdev);
+	struct avd_core *core = platform_get_drvdata(pdev);
 
-	release_firmware(avd->fw);
+	component_del(&pdev->dev, &avd_core_ops);
 
-	avd_v4l2_cleanup(avd);
+	pm_runtime_dont_use_autosuspend(&pdev->dev);
+	pm_runtime_disable(&pdev->dev);
 
-	if (avd->empty_domain)
-		iommu_domain_free(avd->empty_domain);
-
-	pm_runtime_disable(avd->dev);
-	pm_runtime_dont_use_autosuspend(avd->dev);
+	if (core->empty_domain)
+		iommu_domain_free(core->empty_domain);
 }
 
 static __maybe_unused int avd_runtime_resume(struct device *dev)
 {
 	int ret;
-	struct avd_dev *avd = platform_get_drvdata(to_platform_device(dev));
+	struct avd_core *core = platform_get_drvdata(to_platform_device(dev));
 
-	ret = avd_boot(avd);
+	ret = avd_core_boot(core);
 	if (ret)
-		dev_err(dev, "failed to boot");
+		dev_err(dev, "failed to boot core %d\n", core->id);
+
 	return ret;
 }
 
 static __maybe_unused int avd_runtime_suspend(struct device *dev)
 {
-	struct avd_dev *avd = platform_get_drvdata(to_platform_device(dev));
+	struct avd_core *core = platform_get_drvdata(to_platform_device(dev));
 
-	avd_shutdown(avd);
+	avd_core_shutdown(core);
 	return 0;
 }
 
@@ -748,16 +843,229 @@ static const struct dev_pm_ops avd_pm_ops = {
 	SET_RUNTIME_PM_OPS(avd_runtime_suspend, avd_runtime_resume, NULL)
 };
 
-static struct platform_driver avd_driver = {
-	.probe = avd_probe,
-	.remove = avd_remove,
+static struct platform_driver avd_core_pdrv = {
+	.probe = avd_core_probe,
+	.remove = avd_core_remove,
 	.driver = {
-		.name = "avd",
+		.name = "avd-core",
 		.of_match_table = avd_of_match,
 		.pm = &avd_pm_ops,
 	},
 };
-module_platform_driver(avd_driver);
+
+static int avd_bind(struct device *dev)
+{
+	struct avd_dev *avd = dev_get_drvdata(dev);
+	int ret;
+
+	ret = component_bind_all(dev, avd);
+	if (ret) {
+		dev_err(dev, "component bind failed\n");
+		return ret;
+	}
+
+	ret = avd_v4l2_init(avd);
+	if (ret)
+		goto err_unbind;
+
+	v4l2_m2m_set_max_parallel_jobs(avd->m2m_dev, avd->core_count);
+
+	return 0;
+
+err_unbind:
+	component_unbind_all(dev, NULL);
+	return ret;
+}
+
+static void avd_unbind(struct device *dev)
+{
+	struct avd_dev *avd = dev_get_drvdata(dev);
+
+	avd_v4l2_cleanup(avd);
+	release_firmware(avd->fw);
+	component_unbind_all(dev, NULL);
+}
+
+static const struct component_master_ops avd_master_ops = {
+	.bind = avd_bind,
+	.unbind = avd_unbind,
+};
+
+static int avd_probe(struct platform_device *pdev)
+{
+	const struct of_device_id *match_desc = pdev->dev.platform_data;
+	struct device *dev = &pdev->dev;
+	struct component_match *match = NULL;
+	struct device_node *core_node;
+	struct avd_dev *avd;
+	unsigned int num_cores = 0;
+	int ret;
+
+	if (!match_desc)
+		return dev_err_probe(dev, -ENODEV, "missing platform data\n");
+
+	for_each_compatible_node(core_node, NULL, match_desc->compatible) {
+		if (!of_device_is_available(core_node))
+			continue;
+
+		of_node_get(core_node);
+		component_match_add_release(dev, &match, component_release_of,
+					    component_compare_of, core_node);
+		num_cores++;
+	}
+
+	if (!match)
+		return dev_err_probe(dev, -ENODEV,
+				     "no matching available component devices found\n");
+
+	avd = devm_kzalloc(dev, sizeof(*avd), GFP_KERNEL);
+	if (!avd)
+		return -ENOMEM;
+
+	avd->cores = devm_kcalloc(dev, num_cores, sizeof(*avd->cores),
+				     GFP_KERNEL);
+	if (!avd->cores)
+		return -ENOMEM;
+
+	avd->available_cores = devm_kcalloc(dev, num_cores,
+					       sizeof(*avd->available_cores),
+					       GFP_KERNEL);
+	if (!avd->available_cores)
+		return -ENOMEM;
+
+	avd->variant = match_desc->data;
+	if (!avd->variant)
+		return dev_err_probe(dev, -ENODEV, "failed to get match data\n");
+
+	ret = request_firmware(&avd->fw, avd->variant->fw_name, dev);
+	if (ret) {
+		dev_err(dev, "failed to load firmware: %d", ret);
+		return ret;
+	}
+
+	mutex_init(&avd->vdev_lock);
+	spin_lock_init(&avd->cores_lock);
+
+	dev_set_drvdata(dev, avd);
+
+	return component_master_add_with_match(dev, &avd_master_ops, match);
+}
+
+static void avd_remove(struct platform_device *pdev)
+{
+	component_master_del(&pdev->dev, &avd_master_ops);
+}
+
+static struct platform_driver avd_pdrv = {
+	.probe = avd_probe,
+	.remove = avd_remove,
+	.driver = {
+		.name = "avd",
+	},
+};
+
+static bool avd_of_has_available_node(const char *compat)
+{
+	struct device_node *node;
+
+	for_each_compatible_node(node, NULL, compat) {
+		if (of_device_is_available(node)) {
+			of_node_put(node);
+			return true;
+		}
+	}
+
+	return false;
+}
+
+static int avd_create_platform_device(struct platform_device **ppdev,
+				      const struct of_device_id *match)
+{
+	struct platform_device *pdev;
+	int ret;
+
+	pdev = platform_device_alloc(match->compatible, PLATFORM_DEVID_NONE);
+	if (!pdev)
+		return -ENOMEM;
+
+	ret = platform_device_add_data(pdev, match, sizeof(*match));
+	if (ret)
+		goto free_platform_device;
+
+	ret = platform_device_add(pdev);
+	if (ret)
+		goto free_platform_device;
+
+	ret = device_driver_attach(&avd_pdrv.driver, &pdev->dev);
+	if (ret)
+		goto del_platform_device;
+
+	*ppdev = pdev;
+
+	return 0;
+
+del_platform_device:
+	platform_device_del(pdev);
+free_platform_device:
+	platform_device_put(pdev);
+	return ret;
+}
+
+static struct platform_device *master_pdevs[ARRAY_SIZE(avd_of_match) - 1];
+
+static int __init avd_init(void)
+{
+	unsigned int i;
+	int ret;
+
+	ret = platform_driver_register(&avd_core_pdrv);
+	if (ret)
+		return ret;
+
+	ret = platform_driver_register(&avd_pdrv);
+	if (ret)
+		goto unregister_core_driver;
+
+	for (i = 0; i < ARRAY_SIZE(master_pdevs); i++) {
+		if (!avd_of_has_available_node(avd_of_match[i].compatible))
+			continue;
+
+		ret = avd_create_platform_device(&master_pdevs[i],
+						 &avd_of_match[i]);
+		if (ret)
+			goto unregister_platform_devices;
+	}
+
+	return 0;
+
+unregister_platform_devices:
+	for (i = 0; i < ARRAY_SIZE(master_pdevs); i++) {
+		if (master_pdevs[i]) {
+			platform_device_unregister(master_pdevs[i]);
+			master_pdevs[i] = NULL;
+		}
+	}
+	platform_driver_unregister(&avd_pdrv);
+unregister_core_driver:
+	platform_driver_unregister(&avd_core_pdrv);
+	return ret;
+}
+module_init(avd_init);
+
+static void __exit avd_exit(void)
+{
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(master_pdevs); i++) {
+		if (master_pdevs[i]) {
+			platform_device_unregister(master_pdevs[i]);
+			master_pdevs[i] = NULL;
+		}
+	}
+	platform_driver_unregister(&avd_pdrv);
+	platform_driver_unregister(&avd_core_pdrv);
+}
+module_exit(avd_exit);
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Apple Video Decoder driver");

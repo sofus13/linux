@@ -644,7 +644,7 @@ static int validate_dec_params(struct avd_ctx *ctx,
 	 */
 	if (aligned_width != ctx->decoded_fmt.fmt.pix_mp.width ||
 	    aligned_height != ctx->decoded_fmt.fmt.pix_mp.height) {
-		dev_err(ctx->dev->dev,
+		dev_err(ctx->core->dev,
 			"unexpected bitstream resolution %dx%d\n",
 			aligned_width, aligned_height);
 		return -EINVAL;

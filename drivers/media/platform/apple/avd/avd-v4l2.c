@@ -465,13 +465,11 @@ static int avd_enum_framesizes(struct file *file, void *priv,
 static int avd_querycap(struct file *file, void *priv,
 			struct v4l2_capability *cap)
 {
-	struct avd_dev *avd = video_drvdata(file);
 	struct video_device *vdev = video_devdata(file);
 
-	strscpy(cap->driver, avd->dev->driver->name, sizeof(cap->driver));
+	strscpy(cap->driver, "avd", sizeof(cap->driver));
 	strscpy(cap->card, vdev->name, sizeof(cap->card));
-	snprintf(cap->bus_info, sizeof(cap->bus_info), "platform:%s",
-		 avd->dev->driver->name);
+	snprintf(cap->bus_info, sizeof(cap->bus_info), "platform:avd");
 	return 0;
 }
 
@@ -488,10 +486,8 @@ static int avd_try_capture_fmt(struct file *file, void *priv,
 	 * default value.
 	 */
 	coded_desc = ctx->coded_fmt_desc;
-	if (WARN_ON(!coded_desc)) {
-		dev_err(ctx->dev->dev, "no coded desc!");
+	if (WARN_ON(!coded_desc))
 		return -EINVAL;
-	}
 
 	if (!avd_is_valid_fmt(ctx, pix_mp->pixelformat, ctx->image_fmt))
 		pix_mp->pixelformat =
@@ -864,15 +860,20 @@ void avd_job_finish_no_pm(struct avd_ctx *ctx, enum vb2_buffer_state result)
 		ctx->coded_fmt_desc->ops->done(ctx, src_buf, dst_buf, result);
 	}
 
+	if (ctx->core) {
+		release_core(ctx->dev, ctx->core);
+		ctx->core = NULL;
+	}
+
 	v4l2_m2m_buf_done_and_job_finish(ctx->dev->m2m_dev, ctx->fh.m2m_ctx,
 					 result);
 }
 
 void avd_job_finish(struct avd_ctx *ctx, enum vb2_buffer_state result)
 {
-	struct avd_dev *avd = ctx->dev;
+	pm_runtime_mark_last_busy(ctx->core->dev);
+	pm_runtime_put_autosuspend(ctx->core->dev);
 
-	pm_runtime_put_autosuspend(avd->dev);
 	avd_job_finish_no_pm(ctx, result);
 }
 

@@ -555,7 +555,7 @@ static int avd_h264_validate_pps(struct avd_ctx *ctx,
 				 const struct v4l2_ctrl_h264_pps *pps)
 {
 	if (pps->num_slice_groups_minus1 != 0) {
-		dev_err(ctx->dev->dev, "pps->num_slice_groups_minus1 != 0");
+		dev_err(ctx->core->dev, "pps->num_slice_groups_minus1 != 0");
 		return -EINVAL;
 	}
 
