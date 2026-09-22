@@ -361,19 +361,20 @@
 			/* child nodes are added in t6030-pmgr.dtsi */
 		};
 
-		avd: avd@30b080000 {
+		avd: avd@30b070000 {
 			compatible = "apple,t6030-avd", "apple,t8122-avd";
-			reg = <0x3 0x0b080000 0x0 0x12000>,
-			      <0x3 0x0b092000 0x0 0x12000>,
+			reg = <0x3 0x0b070000 0x0 0x4000>,
+			      <0x3 0x0b080000 0x0 0x10000>,
+			      <0x3 0x0b090000 0x0 0x14000>,
 			      <0x3 0x0b0a4000 0x0 0x4000>,
 			      <0x3 0x0b100000 0x0 0x10000>;
-			reg-names = "code", "sram", "mbox", "ctrl";
+			reg-names = "piodma", "code", "sram", "mbox", "ctrl";
 			interrupt-parent = <&aic>;
 			interrupts = <AIC_IRQ 788 IRQ_TYPE_LEVEL_HIGH>,
 				     <AIC_IRQ 789 IRQ_TYPE_LEVEL_HIGH>;
 			power-domains = <&ps_avd_sys>;
 			resets = <&ps_avd_sys>;
-			iommus = <&avd_dart 0>;
+			iommus = <&avd_dart 0>, <&avd_dart 1>;
 		};
 
 		avd_dart: iommu@30b010000 {
