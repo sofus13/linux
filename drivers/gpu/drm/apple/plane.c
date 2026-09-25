@@ -222,13 +222,24 @@ static u32 drm_format_to_dcp(u32 drm, enum drm_color_range range)
 		return fr ? DCP_FORMAT_444F : DCP_FORMAT_444V;
 
 	/* semi planar 10-bit YCbCr formats, limited and full range */
+	case DRM_FORMAT_P030:
+		return fr ? DCP_FORMAT_PF20 : DCP_FORMAT_P420;
+
 	case DRM_FORMAT_P010:
 		return fr ? DCP_FORMAT_XF20 : DCP_FORMAT_X420;
 	case DRM_FORMAT_P210:
 		return fr ? DCP_FORMAT_XF22 : DCP_FORMAT_X422;
 	/*
-	 * TODO: missing DRM fourcc for P410
+	 * TODO: missing DRM fourcc's
 	 */
+#if defined(DRM_FORMAT_P230)
+	case DRM_FORMAT_P230:
+		return fr ? DCP_FORMAT_PF22 : DCP_FORMAT_P422;
+#endif
+#if defined(DRM_FORMAT_P430)
+	case DRM_FORMAT_P430:
+		return fr ? DCP_FORMAT_PF44 : DCP_FORMAT_P444;
+#endif
 #if defined(DRM_FORMAT_P410)
 	case DRM_FORMAT_P410:
 		return fr ? DCP_FORMAT_XF44 : DCP_FORMAT_X444;
@@ -342,7 +353,11 @@ static void apple_plane_atomic_update(struct drm_plane *plane,
 
 		switch (fb->modifier) {
 		case DRM_FORMAT_MOD_APPLE_INTERCHANGE:
-			u32 bpp = drm_format_info_bpp(fmt, i);
+			/* for the interchange layout rounding down is correct */
+			u32 bpp = fmt->char_per_block[i] * 8 /
+				(drm_format_info_block_width(fmt, i) *
+				 drm_format_info_block_height(fmt, i));
+
 			struct dcp_image_layout l = apple_get_interchange_layout(width, height,
 										 bpp, i, fmt->is_yuv);
 
@@ -473,6 +488,13 @@ static const u32 dcp_primary_formats[] = {
 	DRM_FORMAT_NV12,
 	DRM_FORMAT_NV16,
 	DRM_FORMAT_NV24,
+	DRM_FORMAT_P030,
+#if defined(DRM_FORMAT_P230)
+	DRM_FORMAT_P230,
+#endif
+#if defined(DRM_FORMAT_P430)
+	DRM_FORMAT_P430,
+#endif
 	DRM_FORMAT_P010,
 	DRM_FORMAT_P210,
 #if defined(DRM_FORMAT_P410)
@@ -487,6 +509,13 @@ static const u32 dcp_overlay_formats[] = {
 	DRM_FORMAT_NV12,
 	DRM_FORMAT_NV16,
 	DRM_FORMAT_NV24,
+	DRM_FORMAT_P030,
+#if defined(DRM_FORMAT_P230)
+	DRM_FORMAT_P230,
+#endif
+#if defined(DRM_FORMAT_P430)
+	DRM_FORMAT_P430,
+#endif
 	DRM_FORMAT_P010,
 	DRM_FORMAT_P210,
 #if defined(DRM_FORMAT_P410)
