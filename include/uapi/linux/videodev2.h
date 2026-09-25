@@ -841,6 +841,14 @@ struct v4l2_pix_format {
 #define V4L2_PIX_FMT_PISP_COMP2_BGGR	v4l2_fourcc('P', 'C', '2', 'B') /* PiSP 8-bit mode 2 compressed BGGR bayer */
 #define V4L2_PIX_FMT_PISP_COMP2_MONO	v4l2_fourcc('P', 'C', '2', 'M') /* PiSP 8-bit mode 2 compressed monochrome */
 
+/* Apple Interchange, compressed and tiled formats */
+#define V4L2_PIX_FMT_APPLE_IX12	v4l2_fourcc('I', 'X', '1', '2') /* Interchange NV12 */
+#define V4L2_PIX_FMT_APPLE_IX16	v4l2_fourcc('I', 'X', '1', '6') /* Interchange NV16 */
+#define V4L2_PIX_FMT_APPLE_IX24	v4l2_fourcc('I', 'X', '2', '4') /* Interchange NV24 */
+#define V4L2_PIX_FMT_APPLE_IX03	v4l2_fourcc('I', 'X', '0', '3') /* Interchange P030 */
+#define V4L2_PIX_FMT_APPLE_IX23	v4l2_fourcc('I', 'X', '2', '3') /* Interchange P230 */
+#define V4L2_PIX_FMT_APPLE_IX43	v4l2_fourcc('I', 'X', '4', '3') /* Interchange P430 */
+
 /* Renesas RZ/V2H CRU packed formats. 64-bit units with contiguous pixels */
 #define V4L2_PIX_FMT_RAW_CRU10	v4l2_fourcc('C', 'R', '1', '0')
 #define V4L2_PIX_FMT_RAW_CRU12	v4l2_fourcc('C', 'R', '1', '2')

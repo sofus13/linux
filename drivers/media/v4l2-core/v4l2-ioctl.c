@@ -1558,6 +1558,12 @@ static void v4l_fill_fmtdesc(struct v4l2_fmtdesc *fmt)
 		case V4L2_PIX_FMT_PISP_COMP2_GBRG: descr = "PiSP 8b GBGB/RGRG mode2 compr"; break;
 		case V4L2_PIX_FMT_PISP_COMP2_BGGR: descr = "PiSP 8b BGBG/GRGR mode2 compr"; break;
 		case V4L2_PIX_FMT_PISP_COMP2_MONO: descr = "PiSP 8b monochrome mode2 compr"; break;
+		case V4L2_PIX_FMT_APPLE_IX12:	descr = "Interchange NV12"; break;
+		case V4L2_PIX_FMT_APPLE_IX16:	descr = "Interchange NV16"; break;
+		case V4L2_PIX_FMT_APPLE_IX24:	descr = "Interchange NV24"; break;
+		case V4L2_PIX_FMT_APPLE_IX03:	descr = "Interchange P030"; break;
+		case V4L2_PIX_FMT_APPLE_IX23:	descr = "Interchange P230"; break;
+		case V4L2_PIX_FMT_APPLE_IX43:	descr = "Interchange P430"; break;
 		default:
 			if (fmt->description[0])
 				return;
