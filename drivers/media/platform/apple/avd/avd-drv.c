@@ -29,9 +29,10 @@ static void calc_tile_meta(u32 w, u32 h, u32 bpb, u32 tile_dim,
 			   u32 meta_hdr_bytes, u32 *tile, u32 *meta)
 {
 	u32 tiles_width, tiles_height, meta_tile_w, meta_tile_h, tile_bytes;
+
 	tiles_width = DIV_ROUND_UP(w, tile_dim);
 	tiles_height = DIV_ROUND_UP(h, tile_dim);
-	tile_bytes = tile_dim * tile_dim * DIV_ROUND_UP(bpb, 8);
+	tile_bytes = DIV_ROUND_UP(tile_dim * tile_dim * bpb, 8);
 	*tile = ALIGN(tiles_width * tiles_height * tile_bytes, 16);
 
 	meta_tile_w = roundup_pow_of_two(tiles_width);
@@ -40,29 +41,44 @@ static void calc_tile_meta(u32 w, u32 h, u32 bpb, u32 tile_dim,
 	*meta = ALIGN(meta_tile_w * meta_tile_h * meta_hdr_bytes, 16);
 }
 
-void fill_comp(struct avd_comp *comp, enum avd_image_fmt image_fmt, u32 width,
+static inline u8 v4l2_format_info_bpp(const struct v4l2_format_info *info,
+				      int plane)
+{
+	return 8 * info->bpp[plane] / info->bpp_div[plane];
+}
+
+void fill_comp(struct avd_comp *comp, enum avd_image_fmt fmt, u32 width,
 	       u32 height)
 {
-	u32 y_meta, y, uv_meta, uv;
-	int bit_depth;
+	u32 y_meta, y, uv_meta, uv, fourcc;
+	const struct v4l2_format_info *info;
 
-	switch (image_fmt) {
-	case AVD_IMG_FMT_420_10BIT:
-	case AVD_IMG_FMT_422_10BIT:
-		bit_depth = 10;
+	switch (fmt) {
+	case AVD_IMG_FMT_ANY:
+	case AVD_IMG_FMT_420_8BIT:
+		fourcc = V4L2_PIX_FMT_APPLE_IX12;
 		break;
-	default:
-		bit_depth = 8;
+	case AVD_IMG_FMT_420_10BIT:
+		fourcc = V4L2_PIX_FMT_APPLE_IX03;
+		break;
+	case AVD_IMG_FMT_422_8BIT:
+		fourcc = V4L2_PIX_FMT_APPLE_IX16;
+		break;
+	case AVD_IMG_FMT_422_10BIT:
+		fourcc = V4L2_PIX_FMT_APPLE_IX23;
 		break;
 	}
+	info = v4l2_format_info(fourcc);
 
 	/* y has 32x32 tiles and 32 bytes of metadata per tile */
-	calc_tile_meta(width, height, bit_depth, 32, 32, &y, &y_meta);
+	calc_tile_meta(width, height, v4l2_format_info_bpp(info, 0), 32, 32,
+		       &y, &y_meta);
 	/* uv has 16x16 tiles and 8 bytes of metadata per tile */
-	calc_tile_meta(width / 2, height / 2, bit_depth * 2, 16, 8, &uv,
+	calc_tile_meta(width / info->vdiv, height / info->hdiv,
+		       v4l2_format_info_bpp(info, 1), 16, 8, &uv,
 		       &uv_meta);
 
-	/* output like DCP driver expects */
+	/* output like DCP/AGX expect */
 	comp->offsets[0] = y;
 	comp->offsets[1] = 0;
 	comp->offsets[2] = y + y_meta + uv;

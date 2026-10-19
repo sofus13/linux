@@ -19,6 +19,49 @@
 
 #include "avd.h"
 
+static const struct avd_decoded_fmt_desc avd_decoded_fmts[] = {
+	{
+		.fourcc = V4L2_PIX_FMT_NV12,
+		.image_fmt = AVD_IMG_FMT_420_8BIT,
+	},
+	{
+		.fourcc = V4L2_PIX_FMT_P010,
+		.image_fmt = AVD_IMG_FMT_420_10BIT,
+	},
+	{
+		.fourcc = V4L2_PIX_FMT_NV16,
+		.image_fmt = AVD_IMG_FMT_422_8BIT,
+	},
+	{
+		.fourcc = V4L2_PIX_FMT_P210,
+		.image_fmt = AVD_IMG_FMT_422_10BIT,
+	},
+	{
+		.fourcc = V4L2_PIX_FMT_APPLE_IX12,
+		.image_fmt = AVD_IMG_FMT_420_8BIT,
+	},
+	{
+		.fourcc = V4L2_PIX_FMT_APPLE_IX03,
+		.image_fmt = AVD_IMG_FMT_420_10BIT,
+	},
+	{
+		.fourcc = V4L2_PIX_FMT_APPLE_IX16,
+		.image_fmt = AVD_IMG_FMT_422_8BIT,
+	},
+	{
+		.fourcc = V4L2_PIX_FMT_APPLE_IX23,
+		.image_fmt = AVD_IMG_FMT_422_10BIT,
+	},
+};
+
+static bool is_interchange(u32 fourcc)
+{
+	return fourcc == V4L2_PIX_FMT_APPLE_IX12 ||
+		fourcc == V4L2_PIX_FMT_APPLE_IX16 ||
+		fourcc == V4L2_PIX_FMT_APPLE_IX03 ||
+		fourcc == V4L2_PIX_FMT_APPLE_IX23;
+}
+
 static bool avd_image_fmt_match(enum avd_image_fmt fmt1,
 				enum avd_image_fmt fmt2)
 {
@@ -45,13 +88,13 @@ static u32 avd_enum_decoded_fmt(struct avd_ctx *ctx, int index,
 	if (WARN_ON(!desc))
 		return 0;
 
-	for (i = 0; i < desc->num_decoded_fmts; i++) {
-		if (!avd_image_fmt_match(desc->decoded_fmts[i].image_fmt,
+	for (i = 0; i < ARRAY_SIZE(avd_decoded_fmts); i++) {
+		if (!avd_image_fmt_match(avd_decoded_fmts[i].image_fmt,
 					 image_fmt))
 			continue;
 		fmt_idx++;
 		if (index == fmt_idx)
-			return desc->decoded_fmts[i].fourcc;
+			return avd_decoded_fmts[i].fourcc;
 	}
 
 	return 0;
@@ -60,13 +103,12 @@ static u32 avd_enum_decoded_fmt(struct avd_ctx *ctx, int index,
 static bool avd_is_valid_fmt(struct avd_ctx *ctx, u32 fourcc,
 			     enum avd_image_fmt image_fmt)
 {
-	const struct avd_coded_fmt_desc *desc = ctx->coded_fmt_desc;
 	unsigned int i;
 
-	for (i = 0; i < desc->num_decoded_fmts; i++) {
-		if (avd_image_fmt_match(desc->decoded_fmts[i].image_fmt,
+	for (i = 0; i < ARRAY_SIZE(avd_decoded_fmts); i++) {
+		if (avd_image_fmt_match(avd_decoded_fmts[i].image_fmt,
 					image_fmt) &&
-		    desc->decoded_fmts[i].fourcc == fourcc)
+		    avd_decoded_fmts[i].fourcc == fourcc)
 			return true;
 	}
 
@@ -79,11 +121,22 @@ static void avd_fill_decoded_pixfmt(struct avd_ctx *ctx,
 	v4l2_fill_pixfmt_mp(pix_mp, pix_mp->pixelformat, pix_mp->width,
 			    pix_mp->height);
 
+	if (is_interchange(pix_mp->pixelformat))
+		pix_mp->plane_fmt[0].sizeimage = 0;
 	ctx->comp.start_offset = pix_mp->plane_fmt[0].sizeimage;
+
 	fill_comp(&ctx->comp, ctx->image_fmt, pix_mp->width, pix_mp->height);
 	pix_mp->plane_fmt[0].sizeimage += ctx->comp.size;
+
+	/* bytesperline means nothing if the format is interchange */
+	if (is_interchange(pix_mp->pixelformat))
+		pix_mp->plane_fmt[0].bytesperline = ctx->comp.offsets[3];
+
 	if (ctx->coded_fmt_desc->ops->adjust_decoded_fmt)
 		ctx->coded_fmt_desc->ops->adjust_decoded_fmt(ctx, pix_mp);
+
+	pix_mp->plane_fmt[0].sizeimage = ALIGN(pix_mp->plane_fmt[0].sizeimage,
+					       AVD_ALIGN);
 }
 
 static void avd_reset_fmt(struct avd_ctx *ctx, struct v4l2_format *f,
@@ -963,7 +1016,7 @@ void avd_run_preamble(struct avd_ctx *ctx, struct avd_run *run)
 			      ctx->decoded_fmt.fmt.pix_mp.height;
 
 	run->comp_out = run->y_out + ctx->comp.start_offset;
-	ctx->decomp = true;
+	ctx->decomp = !is_interchange(ctx->decoded_fmt.fmt.pix_mp.pixelformat);
 
 	dst = vb2_to_avd_decoded_buf(&run->bufs.dst->vb2_buf);
 	memcpy(&dst->comp, &ctx->comp, sizeof(ctx->comp));
